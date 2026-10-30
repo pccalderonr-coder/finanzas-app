@@ -8,3 +8,4 @@ window.FINANZAS_CONFIG = {
   // Correo al que llegan los comentarios de los testers (opcional).
   feedbackEmail: ''
 };
+192152832759-4deaolntcuu2bnpnj7qgcvm9nkn301gi.apps.googleusercontent.com
