@@ -116,5 +116,20 @@ If you change `template.js`, only **new** sheets get the change; existing sheets
 ## Gemini models
 
 - The default is `gemini-3.8-flash`, set in `config.js`.
-- Each person can switch to `gemini-3.5-flash-lite` (cheaper) or `gemini-flash-latest` in **Ajustes → Gemini**.
-- The app asks Gemini for structured JSON. If a model rejects that request format, the app falls back to an older format automatically.
+- Each person can switch in **Ajustes → Gemini**:
+  - `gemini-3.6-flash`: faster
+  - `gemini-3.5-flash-lite`: fastest and cheapest
+  - `gemini-flash-latest`
+- The Gemini setting also shows how long the last answer took.
+- Each task asks Gemini for the lowest "thinking" level it needs, which keeps answers fast:
+  - `minimal` (or `low` when the model has no `minimal`) for reading entries and reviewing them
+  - `low` for questions and budget reviews
+- Questions get the month's totals already calculated, plus the month's movements, debts, bills, goals and previous months. That way Gemini doesn't have to guess.
+- The app asks for structured JSON. If a model rejects that request format, the app falls back automatically.
+
+## Adding things after the first setup
+
+- **Debts:** go to **Plan → Deudas → Agregar deuda**, or choose "+ Agregar una deuda nueva…" when registering a debt payment, or just say/write it, like "le debo 300 mil a mi hermano". The debt's monthly payment is added to Cuentas por pagar.
+- **Budgets:** go to **Plan → Presupuesto → Agregar presupuesto**, or tap **Ajustar** on any variable budget, or say/write it, like "quiero un presupuesto de 200 mil para el gimnasio".
+
+Gemini reviews each one before it's saved.
