@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = window.FINANZAS_CONFIG || {};
-const APP_VERSION = '31/10/2026 · 5';
+const APP_VERSION = '31/10/2026 · 6';
 const TPL = window.FinanzasTemplate;
 const SCOPE_FILE = 'https://www.googleapis.com/auth/drive.file';
 const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
@@ -175,7 +175,9 @@ function build(opts = {}) {
   const conTarjeta = sum(mm.filter(m => m.tipo === 'Gasto' && cardNames.has(norm(m.metodo))).map(m => m.monto));
   const salidas = gastos - conTarjeta + pagosDeuda + ahorro, saldo = ingresos - salidas;
   const unpaid = bills.filter(b => ['late', 'soon', 'pend'].includes(b.st));
-  const owed = sum(unpaid.filter(b => b.proximo <= `${ym}-${pad(dim)}`).map(b => b.monto));
+  const owedList = unpaid.filter(b => b.proximo <= `${ym}-${pad(dim)}`); const owed = sum(owedList.map(b => b.monto));
+  const isDebtBillB = b => /deuda/.test(norm(b.categoria)) || debts.some(d => norm(d.name) === norm(b.name));
+  const owedDebt = sum(owedList.filter(isDebtBillB).map(b => b.monto)), owedBills = owed - owedDebt;
   const deudaTotal = sum(debts.map(d => Math.max(0, d.saldo)));
   const fondo = goals.find(g => /emergencia/.test(norm(g.name)));
   // Presupuestos
@@ -204,7 +206,7 @@ function build(opts = {}) {
   const months = []; for (let m = mTop; m >= mBottom && months.length < 48; m = addYM(m, -1)) months.push(m);
   if (!months.includes(ym)) { months.push(ym); months.sort().reverse(); }
   const D = { T, ym, Y, M, Dd, dim, today: realT, curYM, past, future, months, dayFrac: past ? 1 : future ? 0 : Dd / dim, daysLeft: past ? 0 : future ? dim : dim - Dd, movs, mm, cats: catList, metodos: metodos.length ? metodos : TPL.METODOS.slice(), listsInfo,
-    bills, unpaid, owed, left: saldo - owed, debts, cards, cardNames, goals, fondo, budgets, budgetTotal, fixedCosts, saveCat, prof, ingresoEsperado,
+    bills, unpaid, owed, owedDebt, owedBills, left: saldo - owed, debts, cards, cardNames, goals, fondo, budgets, budgetTotal, fixedCosts, saveCat, prof, ingresoEsperado,
     ingresos, gastos, conTarjeta, pagosDeuda, ahorro, salidas, saldo, deudaTotal, hist, avisar, movHead: mt.idx, billHead: bt.idx,
     links: { bills: bills.filter(b => b.st !== 'ended').map(b => b.name), debts: debts.map(d => d.name), goals: goals.map(g => g.name) },
     ok: !!(raw.mov && raw.lists), isTemplate: S.demo || (S.tabs || []).includes('Perfil') };
@@ -574,7 +576,7 @@ async function answerQ(D, q) {
 }
 
 /* ================= datos de ejemplo (inventados) ================= */
-const DEMO_EXTRA = []; const DEMO_DEL = new Set(); const DEMO_NEW = { debts: [], bills: [], budgets: [] };
+const DEMO_EXTRA = []; const DEMO_DEL = new Set(); const DEMO_NEW = { debts: [], bills: [], budgets: [] }; const DEMO_EDITS = {};
 function demoRaw() {
   const T = today(); const ym = T.slice(0, 7); const d = +T.slice(8, 10); const dimNow = daysIn(+ym.slice(0, 4), +ym.slice(5, 7)); const pm = addYM(ym, -1), pm2 = addYM(ym, -2);
   const day = (m, n) => `${m}-${pad(Math.min(n, daysIn(+m.slice(0, 4), +m.slice(5, 7))))}`;
@@ -604,6 +606,7 @@ function demoRaw() {
     add(day(m, 9), 'Gasto', 'Otros gastos', 'Farmacia', cur ? 54000 : 38000, 'Efectivo'); }
   for (const x of DEMO_EXTRA) mov.push([serial(x.fecha), x.tipo, x.categoria, x.desc, x.monto, x.metodo, x.link]);
   debts.push(...DEMO_NEW.debts); bills.push(...DEMO_NEW.bills);
+  for (const r of bills) { const e = DEMO_EDITS[r[0]]; if (e) { r[1] = e.cat; r[2] = e.monto; r[3] = e.dia; } }
   for (const [n, v] of DEMO_NEW.budgets) { const r = lists.find(x => x[2] === n); if (r) r[3] = v; else lists.push(['', 'Gasto', n, v]); }
   return { mov: mov.filter((r, i) => !DEMO_DEL.has(i + 1)), bills, debts, goals, lists, perfil };
 }
@@ -730,7 +733,7 @@ function vInicio(D) {
     <section class="hero ${neg ? 'neg' : ''}" aria-label="${P ? 'Saldo del mes' : 'Lo que queda del mes'}">
       <div class="row1"><span class="lbl">${P ? 'Saldo del mes' : neg ? 'Te faltan' : 'Te quedan'}</span><span class="left n">${P ? 'Mes cerrado' : D.future ? 'Aún no empieza' : quedan(D.daysLeft)}</span></div>
       <div class="big n">${S.hide ? '$ •••••' : `${P && bigVal < 0 ? '−' : ''}<small>$</small>${fmt(bigVal).slice(1)}`}</div>
-      <div class="calc n">${P ? `Ingresos ${money(D.ingresos)} − salidas ${money(D.salidas)}` : `Saldo del mes ${money(D.saldo)} − cuentas por pagar ${money(D.owed)}`}</div>
+      ${heroBreakdown(D)}
       <div class="bar" role="img" aria-label="Porcentaje de ingresos gastado"><i style="width:${Math.min(100, (spentPct || 0) * 100).toFixed(1)}%"></i></div>
       <div class="sub n">${spentPct == null ? (P ? `No hay ingresos registrados en ${mes}.` : 'Registra tus ingresos para ver cuánto llevas gastado.') : `${P ? 'Gastaste' : 'Has gastado'} el ${pct(spentPct)} de tus ingresos`}</div>
     </section>
@@ -752,6 +755,14 @@ function vInicio(D) {
       ${D.mm.length ? `<div class="card pad0"><div class="list div">${D.mm.slice(0, 6).map(movRow).join('')}</div></div>` : `<div class="card"><div class="empty"><b>Sin movimientos en ${mes}</b>Toca + para registrar uno.</div></div>`}</section>
   </div>`;
 }
+/* Cómo se llega a "Te quedan": las cuotas de deudas pagadas y por pagar se ven aparte. */
+function heroBreakdown(D) {
+  const rows = [['Ingresos', D.ingresos, '+'], [D.conTarjeta ? 'Gastos (sin compras con tarjeta)' : 'Gastos', D.gastos - D.conTarjeta, '−'], ['Cuotas de deudas pagadas', D.pagosDeuda, '−']];
+  if (D.ahorro) rows.push(['Ahorro', D.ahorro, '−']);
+  if (!D.past) rows.push(['Cuentas por pagar', D.owedBills, '−'], ['Cuotas de deudas por pagar', D.owedDebt, '−']);
+  const v = (x, sg) => S.hide ? '•••' : `${x ? sg : ''}${fmt(x)}`;
+  return `<div class="brk n">${rows.map(([l, x, sg]) => `<span>${l}</span><span>${v(x, sg)}</span>`).join('')}${D.conTarjeta ? `<em>Las compras con tarjeta (${S.hide ? '•••' : fmt(D.conTarjeta)}) se descuentan cuando pagas la cuota de la tarjeta.</em>` : ''}</div>`;
+}
 function tile(label, value, cls, sub) { return `<div class="tile"><span class="lbl2">${label}</span><b class="n ${cls}">${value}</b><span class="n">${sub}</span></div>`; }
 function monthLine(D) {
   const dots = D.bills.filter(b => b.st !== 'sched' && b.st !== 'ended').map(b => ({ b, day: +b.fechaMes.slice(8, 10) })).sort((a, b) => a.day - b.day);
@@ -763,13 +774,13 @@ function monthLine(D) {
       ${[1, 10, 20, D.dim].filter(d => !now || Math.abs(d - D.Dd) > 3).map(d => `<span class="ax n" style="left:${X(d).toFixed(2)}%">${d}</span>`).join('')}
       ${dots.map(({ b, day }) => { const k = used[day] = (used[day] || 0) + 1; return `<button class="dt ${cls[b.st] || 'pend'} ${sel && sel.name === b.name ? 'sel' : ''}" style="left:${X(day).toFixed(2)}%;top:${30 - Math.min(k - 1, 2) * 13}px" data-act="selbill" data-name="${esc(b.name)}" aria-label="${txt(b.name)}, ${ST_LABEL[b.st]}, día ${day}"></button>`; }).join('')}</div>
     <div class="legend"><span><i style="background:var(--good)"></i>Pagada</span><span><i style="background:var(--warn)"></i>Vence pronto</span><span><i style="background:var(--red)"></i>Vencida</span><span><i class="hollow"></i>Pendiente</span></div>
-    ${sel ? `<div class="selbill"><span class="cav">${ic(billIcon(sel))}</span><div class="tx"><b>${txt(sel.name)}</b><span class="${ST_CLASS[sel.st]}">${esc(dueText(sel))} · ${money(sel.monto)}</span></div>${sel.st === 'paid' ? `<span class="pill ok">${ic('check')}Pagada</span>` : D.past ? `<span class="pill">Sin pago</span>` : `<button class="btn sm pri" data-act="pay" data-name="${esc(sel.name)}">Pagar</button>`}</div>` : `<p class="muted small" style="margin:8px 0 0">Toca un punto para ver la cuenta.</p>`}
+    ${sel ? `<div class="selbill"><span class="cav">${ic(billIcon(sel))}</span><button class="tx" data-act="edit-bill" data-name="${esc(sel.name)}"><b>${txt(sel.name)}</b><span class="${ST_CLASS[sel.st]}">${esc(dueText(sel, D.past))} · ${money(sel.monto)}</span><span class="edl">${ic('pen')}Día ${sel.dia} · cambiar</span></button>${sel.st === 'paid' ? `<span class="pill ok">${ic('check')}Pagada</span>` : D.past ? `<span class="pill">Sin pago</span>` : `<button class="btn sm pri" data-act="pay" data-name="${esc(sel.name)}">Pagar</button>`}</div>` : `<p class="muted small" style="margin:8px 0 0">Toca un punto para ver la cuenta.</p>`}
   </section>`;
 }
 function billRow(b, compact, past) {
   const d = past ? b.fechaMes : b.proximo; const cls = ST_CLASS[b.st];
   return `<div class="row"><div class="date ${cls} n"><b>${+d.slice(8, 10)}</b><i>${MES3[+d.slice(5, 7) - 1]}</i></div>
-    <div class="tx"><b>${txt(b.name)}</b><span class="${cls}">${esc(dueText(b, past))}${compact ? '' : ` · ${esc(b.categoria)}`}</span></div>
+    <button class="tx" data-act="edit-bill" data-name="${esc(b.name)}" aria-label="Editar ${esc(b.name)}"><b>${txt(b.name)}</b><span class="${cls}">${esc(dueText(b, past))}${compact ? '' : ` · ${esc(b.categoria)}`}</span>${compact ? '' : `<span class="edl">${ic('pen')}Día ${b.dia} · cambiar</span>`}</button>
     <div class="rend"><span class="amt n">${money(b.monto)}</span>${b.st === 'paid' ? (compact ? '' : `<span class="pill ok">${ic('check')}Pagada</span>`) : (b.st === 'sched' || b.st === 'ended') ? `<span class="pill">${ST_LABEL[b.st]}</span>` : past ? `<span class="pill">Sin pago</span>` : `<button class="btn sm ${b.st === 'late' || b.st === 'soon' ? 'pri' : ''}" data-act="pay" data-name="${esc(b.name)}">Pagar</button>`}</div></div>`;
 }
 const movKey = m => [m.row, m.fecha, m.monto, m.desc].join('|');
@@ -800,7 +811,7 @@ function vCuentas(D) {
       return list.length ? `<section class="grp"><div class="lbl2"><span>${t}</span><span class="n">${money(sum(list.map(b => b.monto)))}</span></div><div class="card pad0"><div class="list div">${list.map(b => billRow(b, false, P)).join('')}</div></div></section>` : ''; }).join('')}
     ${D.bills.length ? '' : `<div class="card"><div class="empty"><b>No hay cuentas</b>Agrégalas en la guía de presupuesto.</div></div>`}
     <a class="btn ghost lg wide" href="#guia">${ic('sparkle')}Agregar o cambiar cuentas</a>
-    <p class="muted small" style="margin:0">Una cuenta queda Pagada cuando registras un movimiento con su nombre este mes. Avisa con ${D.avisar} días de anticipación.</p></div>`;
+    <p class="muted small" style="margin:0">Toca una cuenta para cambiar su día de pago, su monto o su categoría. Una cuenta queda Pagada cuando registras un movimiento con su nombre en el mes. Avisa con ${D.avisar} días de anticipación.</p></div>`;
 }
 
 /* ---------- Movimientos ---------- */
@@ -839,7 +850,7 @@ function vPlan(D) {
   } else if (PLANTAB === 'deudas') {
     body = D.debts.length ? D.debts.map(d => { const paidM = sum(D.mm.filter(m => m.tipo === 'Pago de deuda' && norm(m.link) === norm(d.name)).map(m => m.monto));
       const cuota = d.cuota || (D.bills.find(b => norm(b.name) === norm(d.name))?.monto || 0);
-      return `<div class="card pad stack" style="gap:10px"><div class="row" style="padding:0"><span class="cav g">${ic('card')}</span><div class="tx"><b>${txt(d.name)}</b><span>${esc(d.tipo)}${d.dia ? ` · paga el día ${d.dia}` : ''}</span></div><span class="amt n">${money(d.saldo)}<small>saldo actual</small></span></div>
+      return `<div class="card pad stack" style="gap:10px"><div class="row" style="padding:0"><span class="cav g">${ic('card')}</span><div class="tx"><b>${txt(d.name)}</b><span>${esc(d.tipo)}${d.dia ? ` · paga el día ${d.dia}` : ''}</span>${D.bills.some(b => norm(b.name) === norm(d.name)) ? `<button class="lnk edl-b" data-act="edit-bill" data-name="${esc(D.bills.find(b => norm(b.name) === norm(d.name)).name)}">${ic('pen')}Cambiar día o cuota</button>` : ''}</div><span class="amt n">${money(d.saldo)}<small>saldo actual</small></span></div>
         <div class="prog"><i style="width:${Math.min(100, Math.max(0, (d.pctp || 0) * 100)).toFixed(1)}%"></i></div>
         <div class="kv"><div>Pagado<b class="n">${pct(d.pctp)}</b></div><div>Cuota<b class="n">${cuota ? money(cuota) : '—'}</b></div><div>Meses<b class="n">${d.meses ?? '—'}</b></div></div>
         <div class="row" style="padding:0;gap:8px"><div class="tx"><span style="white-space:normal">${D.ym === D.curYM ? 'Este mes pagaste' : `En ${MES[D.M - 1]} pagaste`} ${money(paidM)}${cuota ? ` de ${money(cuota)}` : ''}</span></div>${D.past ? '' : `<button class="btn sm ${paidM >= cuota && cuota ? '' : 'pri'}" data-act="reg" data-reg="${esc(JSON.stringify({ tipo: 'Pago de deuda', link: d.name, monto: Math.max(0, cuota - paidM) || '' }))}">Registrar pago</button>`}</div></div>`; }).join('')
@@ -1240,6 +1251,51 @@ async function saveBudget(x) {
   await loadSheet({ quiet: true });
 }
 
+/* ---------- Editar una cuenta por pagar (día de pago, monto, categoría) ---------- */
+function openBillEditor(name) {
+  const D = build(); const b = D.bills.find(x => x.name === name); if (!b) return;
+  const debt = D.debts.find(d => norm(d.name) === norm(b.name)); const isDebt = !!debt && /deuda/.test(norm(b.categoria));
+  const cats = catsFor(D, 'Gasto'); const catOpts = isDebt ? [b.categoria] : (cats.includes(b.categoria) ? cats : [b.categoria, ...cats].filter(Boolean));
+  openSheet(`<div class="grab"></div><h2>Editar cuenta</h2>
+    <div class="src"><span class="cav">${ic(billIcon(b))}</span><div class="tx"><b>${esc(b.name)}</b><span>${esc(b.categoria)}${isDebt ? ' · cuota de una deuda' : ''}</span></div></div>
+    <div class="two"><label class="fld"><span>Día de pago</span><input id="e-dia" inputmode="numeric" autocomplete="off" value="${esc(String(b.dia))}"></label>
+      <label class="fld"><span>Monto</span><input id="e-monto" class="money" inputmode="numeric" autocomplete="off" value="${esc(fmtTyping(String(Math.round(b.monto))))}"></label></div>
+    ${isDebt ? '' : `<label class="fld"><span>Categoría</span><select id="e-cat">${catOpts.map(c => `<option ${c === b.categoria ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`}
+    <div class="hint">${ic('cal')}<span id="e-hint"></span></div>
+    <div class="err" id="e-err" role="alert"></div>
+    <div class="two"><button class="btn ghost lg" data-act="close-sheet">Cancelar</button><button class="btn pri lg" id="e-save">${ic('check')}Guardar</button></div>`, root => {
+    const hint = () => {
+      const d = Math.min(31, digits($('#e-dia', root).value)); const D2 = build();
+      const nextYM = addYM(D2.ym, 1); const thisDay = d ? Math.min(d, D2.dim) : 0;
+      $('#e-hint', root).textContent = !d ? 'Escribe un día entre 1 y 31.' : b.pagado > 0
+        ? `Ya está pagada en ${MES[D2.M - 1]}. La próxima vence el ${Math.min(d, daysIn(+nextYM.slice(0, 4), +nextYM.slice(5, 7)))} de ${MES[+nextYM.slice(5, 7) - 1]}.`
+        : thisDay < D2.Dd ? `En ${MES[D2.M - 1]} quedaría vencida (día ${thisDay}) hasta que registres el pago.` : `Vencería el ${thisDay} de ${MES[D2.M - 1]}.`;
+    };
+    hint();
+    root.addEventListener('input', e => { const t = e.target; if (t.id === 'e-dia') { t.value = t.value.replace(/\D/g, '').slice(0, 2); hint(); } if (t.classList.contains('money')) t.value = fmtTyping(t.value.replace(/\D/g, '').slice(0, 12)); });
+    $('#e-save', root).addEventListener('click', async e => {
+      const btn = e.currentTarget; const err = $('#e-err', root); err.textContent = '';
+      const dia = digits($('#e-dia', root).value), monto = digits($('#e-monto', root).value), cat = isDebt ? b.categoria : $('#e-cat', root).value;
+      if (!dia || dia > 31) { err.textContent = 'El día de pago debe estar entre 1 y 31.'; return; }
+      if (!monto) { err.textContent = 'Escribe el monto.'; return; }
+      btn.disabled = true; btn.innerHTML = '<span class="spinner sm"></span>Guardando…';
+      try { await saveBill(b, debt, isDebt, { dia, monto, cat }); closeSheet(); toast(S.demo ? 'Cuenta actualizada en el ejemplo' : 'Cuenta actualizada en tu hoja'); render(); }
+      catch (x) { err.textContent = x.code === 'auth' ? 'Tu sesión de Google venció. Vuelve a iniciar sesión y guarda de nuevo.' : 'No se guardó: ' + (x.message || 'intenta de nuevo.'); btn.disabled = false; btn.innerHTML = ic('check') + 'Guardar'; }
+    });
+  });
+}
+async function saveBill(b, debt, isDebt, x) {
+  if (S.demo) { DEMO_EDITS[b.name] = { dia: x.dia, monto: x.monto, cat: x.cat }; return; }
+  const data = []; const put = (range, values) => data.push({ range, values });
+  put(`'Cuentas por pagar'!B${b.row}:D${b.row}`, [[x.cat, x.monto, x.dia]]);
+  if (isDebt && debt && debt.row) {                       // la deuda guarda su propio día de pago y cuota
+    put(`Deudas!F${debt.row}`, [[x.dia]]);
+    if (debt.cuota && !debt.card) put(`Deudas!E${debt.row}`, [[x.monto]]);
+  }
+  await writeValues(data, 'USER_ENTERED');
+  await loadSheet({ quiet: true });
+}
+
 /* ---------- Guía de presupuesto ---------- */
 const BILL_SUGGEST = [['Arriendo', 'Arriendo'], ['Administración', 'Arriendo'], ['Servicios (luz, agua, gas)', 'Servicios e internet'], ['Internet', 'Servicios e internet'], ['Celular', 'Servicios e internet'],
   ['Plan de salud', 'Salud'], ['Seguro', 'Salud'], ['Streaming', 'Suscripciones'], ['Gimnasio', 'Suscripciones'], ['Aporte familiar', 'Familia'], ['Colegio o universidad', 'Educación']];
@@ -1509,6 +1565,7 @@ document.addEventListener('click', async e => {
     case 'reg': { let o = {}; try { o = JSON.parse(el.dataset.reg || '{}'); } catch (err) {} const D = build(); R = newDraft(o); applyLink(R, D); location.hash = '#registrar'; return; }
     case 'ptab': PLANTAB = el.dataset.v; return render();
     case 'edit-budget': return openBudgetSheet({ name: el.dataset.name || '' });
+    case 'edit-bill': return openBillEditor(el.dataset.name || '');
     case 'new-debt': { const fromReg = el.dataset.from === 'reg'; return openDebtSheet({ name: el.dataset.name || '' }, { onSaved: n => { if (fromReg && R) { R.tipo = 'Pago de deuda'; R.link = n; R.err = ''; R.newDebt = ''; applyLink(R, build()); } } }); }
     case 'ftipo': PF.tipo = el.dataset.v; return render();
     case 'fcat': PF.cat = el.dataset.v; return render();
