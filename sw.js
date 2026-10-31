@@ -1,6 +1,6 @@
 /* Service worker de Finanzas: guarda solo los archivos de la app para que abra rápido y sin conexión.
    Nunca guarda datos: las llamadas a Google (hojas, Drive, inicio de sesión) y a Gemini van siempre directo a la red. */
-const VERSION = 'finanzas-v2';
+const VERSION = 'finanzas-v3';
 const SHELL = ['./', 'index.html', 'app.js', 'template.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

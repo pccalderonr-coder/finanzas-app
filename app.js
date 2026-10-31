@@ -345,9 +345,10 @@ async function appendMovement(m) {
   const set = (k, v) => { if (k in idx) row[idx[k]] = v; };
   set('fecha', serial(m.fecha)); set('tipo', m.tipo); set('categoria', m.categoria); set('desc', cleanText(m.desc)); set('monto', Math.round(m.monto)); set('metodo', m.metodo || ''); set('link', m.link || '');
   const range = `Movimientos!A:${String.fromCharCode(64 + width)}`;
-  await gfetch(`${SHEETS}/${enc(S.sheetId)}/values/${enc(range)}:append?valueInputOption=RAW&insertDataOption=OVERWRITE`, { method: 'POST', body: { values: [row] } });
+  const res = await gfetch(`${SHEETS}/${enc(S.sheetId)}/values/${enc(range)}:append?valueInputOption=RAW&insertDataOption=OVERWRITE`, { method: 'POST', body: { values: [row] } });
   S.pending.push({ ...m, row: 1e9 + S.pending.length });
   setTimeout(() => loadSheet({ quiet: true }), 600);
+  const mm = String(res?.updates?.updatedRange || '').match(/![A-Z]+(\d+)/); return mm ? +mm[1] : null;
 }
 async function deleteMovement(m) {
   if (S.demo) { const i = DEMO_EXTRA.findIndex(x => x.fecha === m.fecha && x.desc === m.desc && x.monto === m.monto); if (i >= 0) DEMO_EXTRA.splice(i, 1); else DEMO_DEL.add(m.row); return; }
@@ -907,7 +908,9 @@ function vRegistrar(D) {
     <div class="hint" id="hint">${ic('sparkle')}<span>${esc(hintFor(D, r))}</span></div>
     <div class="err" id="r-err" role="alert">${r.mode === 'form' && r.err ? esc(r.err) : ''}</div>
     ${r.newDebt ? `<button class="btn pri wide" data-act="new-debt" data-name="${esc(r.newDebt)}" data-from="reg">${ic('plus')}Agregar la deuda “${esc(r.newDebt)}”</button>` : ''}
-    <button class="btn pri lg wide" data-act="review" ${r.busy ? 'disabled' : ''}>${r.busy && r.mode === 'form' ? 'Gemini está revisando…' : 'Revisar con Gemini'}</button>
+    <div class="two"><button class="btn ghost lg" data-act="save-direct" ${r.busy || r.saving ? 'disabled' : ''}>${r.saving ? 'Guardando…' : `${ic('check')}Guardar directo`}</button>
+      <button class="btn pri lg" data-act="review" ${r.busy || r.saving ? 'disabled' : ''}>${r.busy && r.mode === 'form' ? 'Revisando…' : `${ic('sparkle')}Con Gemini`}</button></div>
+    <p class="muted small center" style="margin:-8px 0 0">“Guardar directo” escribe la fila en tu hoja de una vez, sin la revisión de Gemini.</p>
   </div>`;
 }
 function validate(r) {
@@ -916,6 +919,21 @@ function validate(r) {
   if (r.tipo !== 'Ingreso' && !r.metodo) return 'Elige el método de pago.'; return '';
 }
 function syncDraft() { if (!R) return; const g = id => $(id); if (g('#f-monto')) R.monto = g('#f-monto').value.replace(/\D/g, ''); if (g('#f-desc')) R.desc = g('#f-desc').value; if (g('#f-fecha')) R.fecha = g('#f-fecha').value; if (g('#f-metodo')) R.metodo = g('#f-metodo').value; if (g('#f-link')) R.link = g('#f-link').value; }
+/* Guardar directo: escribe la fila sin la revisión de Gemini. Se puede deshacer desde el aviso. */
+async function saveDirect() {
+  const r = R; const e = validate(r); if (e) { r.err = e; const el = $('#r-err'); if (el) el.textContent = e; else render(); return; }
+  const m = { fecha: r.fecha, tipo: r.tipo, categoria: r.categoria, desc: cleanText(r.desc) || r.categoria, monto: digits(r.monto), metodo: r.metodo, link: r.link };
+  r.err = ''; r.saving = true; render();
+  try {
+    const row = await appendMovement(m); if (m.metodo) LS.set('fz-metodo', m.metodo);
+    R = null; location.hash = '#inicio'; render();
+    toast(S.demo ? 'Guardado en el ejemplo' : `Guardado en tu hoja · ${money(m.monto)}`, { label: 'Deshacer', run: async () => {
+      try { await deleteMovement({ ...m, row }); toast(S.demo ? 'Se borró del ejemplo' : 'Se borró de tu hoja'); render(); }
+      catch (x) { toast(x.code === 'moved' || x.code === 'pending' ? 'No pude deshacerlo. Bórralo desde Movimientos.' : 'No se pudo deshacer: ' + (x.message || 'intenta de nuevo.')); } } });
+  } catch (err) {
+    r.saving = false; r.err = err.code === 'auth' ? 'Tu sesión de Google venció. Toca Continuar con Google y vuelve a guardar.' : err.code === 'network' ? 'Sin conexión. No se guardó.' : 'No se guardó: ' + (err.message || 'intenta de nuevo.'); render();
+  }
+}
 async function reviewAndConfirm() {
   const D = build(); const r = R; const e = validate(r); if (e) { r.err = e; const el = $('#r-err'); if (el) el.textContent = e; else render(); return; }
   if (!S.key) { r.err = GEM_ERR.no_key; render(); return; }
@@ -1428,7 +1446,11 @@ function openSettings() {
 function setDemo(on) { S.demo = !!on; LS.set('fz-demo', S.demo); R = null; W = null; if (!S.demo) loadSheet(); render(); }
 
 /* ================= eventos ================= */
-function toast(msg) { const r = $('#toast-root'); r.innerHTML = `<div class="toast" role="status">${esc(msg)}</div>`; clearTimeout(toast._t); toast._t = setTimeout(() => r.innerHTML = '', 3200); }
+function toast(msg, act) {
+  const r = $('#toast-root'); r.innerHTML = `<div class="toast" role="status"><span>${esc(msg)}</span>${act ? `<button class="tact">${esc(act.label)}</button>` : ''}</div>`;
+  if (act) r.querySelector('.tact').addEventListener('click', () => { r.innerHTML = ''; clearTimeout(toast._t); act.run(); });
+  clearTimeout(toast._t); toast._t = setTimeout(() => r.innerHTML = '', act ? 7000 : 3200);
+}
 const tipEl = () => $('#tip');
 document.addEventListener('pointermove', e => { const tip = tipEl(); const t = e.target.closest?.('[data-tip]'); if (!t) { tip.hidden = true; return; } tip.textContent = t.dataset.tip; tip.hidden = false; tip.style.left = Math.min(window.innerWidth - tip.offsetWidth - 8, Math.max(8, e.clientX - tip.offsetWidth / 2)) + 'px'; tip.style.top = Math.max(8, e.clientY - tip.offsetHeight - 12) + 'px'; });
 let armed = null;
@@ -1464,6 +1486,7 @@ document.addEventListener('click', async e => {
     case 'rtipo': syncDraft(); R.tipo = el.dataset.v; R.link = ''; R.categoria = ''; R.err = ''; R.newDebt = ''; return render();
     case 'rcat': syncDraft(); R.categoria = el.dataset.v; R.err = ''; return render();
     case 'review': syncDraft(); return reviewAndConfirm();
+    case 'save-direct': syncDraft(); return saveDirect();
     case 'mic': return toggleMic();
     case 'del': { const key = el.dataset.key;
       if (armed !== key) { document.querySelectorAll('.del.arm').forEach(x => { x.classList.remove('arm'); x.innerHTML = ic('trash'); }); armed = key; el.classList.add('arm'); el.textContent = '¿Borrar?'; setTimeout(() => { if (armed === key) { armed = null; el.classList.remove('arm'); el.innerHTML = ic('trash'); } }, 3500); return; }

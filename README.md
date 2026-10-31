@@ -17,13 +17,13 @@ Finanzas is an installable web app (PWA) that people open from their phone's hom
    - a final Gemini review with concrete adjustments they can apply in one tap
 
    The guide then writes the budget into their sheet. It can be re-run any time from **Plan → Ajustar presupuesto con Gemini**.
-5. From then on, every entry goes through Gemini before it is saved to their sheet:
-   - **Escribir** (form): Gemini checks the category, duplicates and budget impact.
+5. From then on, entries go through Gemini before they are saved to their sheet:
+   - **Escribir** (form): **Con Gemini** checks the category, duplicates and budget impact. **Guardar directo** skips the review and writes the row at once; the notice that follows has a **Deshacer** button.
    - **Foto**: Gemini reads a receipt.
    - **Voz**: Gemini listens to a voice note.
    - **Frase**: Gemini parses a typed sentence.
 
-   Every save shows a confirmation screen first.
+   Every save through Gemini shows a confirmation screen first.
 
 **Privacy model**
 
