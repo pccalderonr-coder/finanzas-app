@@ -6,6 +6,7 @@
 'use strict';
 
 const CFG = window.FINANZAS_CONFIG || {};
+const APP_VERSION = '31/10/2026 · 4';
 const TPL = window.FinanzasTemplate;
 const SCOPE_FILE = 'https://www.googleapis.com/auth/drive.file';
 const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
@@ -1435,6 +1436,7 @@ function openSettings() {
       <button data-act="change-sheet"><span class="cav">${ic('refresh')}</span><span><b>Cambiar de hoja</b><span class="s">Crear otra o conectar una existente</span></span></button>
       ${CFG.feedbackEmail ? `<a href="mailto:${esc(CFG.feedbackEmail)}?subject=${enc('Comentario Finanzas App')}"><span class="cav">${ic('chat')}</span><span><b>Enviar comentario</b><span class="s">${esc(CFG.feedbackEmail)}</span></span></a>` : ''}
       <button data-act="signout"><span class="cav">${ic('logout')}</span><span><b>Cerrar sesión</b><span class="s">Tu hoja sigue en tu Drive</span></span></button>
+      <button data-act="update-app"><span class="cav">${ic('refresh')}</span><span><b>Buscar actualización</b><span class="s">Versión ${APP_VERSION}</span></span></button>
       <button data-act="wipe"><span class="cav">${ic('trash')}</span><span><b>Borrar datos de este teléfono</b><span class="s">Clave de Gemini, sesión y ajustes</span></span></button>
     </div>
     <button class="btn pri lg wide" data-act="close-sheet">Listo</button>`, root => {
@@ -1463,6 +1465,9 @@ document.addEventListener('click', async e => {
     case 'signin': S.err = null; try { await signIn({ prompt: tokenValid() ? '' : '' }); S.err = null; if (S.sheetId) { await loadSheet(); maybeGuide(); } else render(); } catch (err) { S.err = { code: err.code, message: err.code === 'popup_failed' || err.code === 'popup_closed' ? 'No se abrió la ventana de Google. Usa “Inicia sesión aquí”.' : err.code === 'no_client' ? 'Falta el ID de cliente en config.js.' : 'Google no dio acceso.' }; render(); } return;
     case 'signin-redirect': return redirectSignIn(SCOPE_FILE + (hasScope(SCOPE_SHEETS) ? ' ' + SCOPE_SHEETS : ''));
     case 'signout': closeSheet(); return signOut();
+    case 'update-app': closeSheet(); toast('Buscando la versión más reciente…');
+      try { const regs = navigator.serviceWorker && navigator.serviceWorker.getRegistrations ? await navigator.serviceWorker.getRegistrations() : []; await Promise.all(regs.map(x => x.unregister())); if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); } } catch (err) {}
+      location.replace(location.pathname + '?u=' + Date.now() + location.hash); return;
     case 'wipe': if (!el.dataset.armed) { el.dataset.armed = '1'; el.querySelector('b').textContent = 'Toca otra vez para borrar'; return; } closeSheet(); try { localStorage.clear(); } catch (err) {} location.reload(); return;
     case 'demo-on': return setDemo(true);
     case 'demo-off': return setDemo(false);
@@ -1566,6 +1571,14 @@ function boot() {
   if (!S.token && LS.get('fz-signed', false)) S.err = { code: 'auth' };
   route();
   if (S.sheetId && tokenValid() && !S.demo) loadSheet().then(maybeGuide);
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const had = !!navigator.serviceWorker.controller; let done = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {   // hay versión nueva: recarga una vez, salvo si estás escribiendo algo
+      const busy = (VIEW === 'registrar' && R && (R.monto || R.desc || R.phrase)) || VIEW === 'guia' || $('#sheet-root').innerHTML;
+      if (had && !done && !busy) { done = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js').then(r => r.update && r.update()).catch(() => {});
+  }
+  if (/[?&]u=\d+/.test(location.search)) history.replaceState(null, '', location.pathname + location.hash);
 }
 boot();
