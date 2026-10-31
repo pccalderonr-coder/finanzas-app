@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = window.FINANZAS_CONFIG || {};
-const APP_VERSION = '31/10/2026 · 4';
+const APP_VERSION = '31/10/2026 · 5';
 const TPL = window.FinanzasTemplate;
 const SCOPE_FILE = 'https://www.googleapis.com/auth/drive.file';
 const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
@@ -27,9 +27,9 @@ const S = {
   raw: {}, loadedAt: 0, loading: false, err: null, pending: [], removed: new Set(),
   hide: LS.get('fz-hide', false), demo: LS.get('fz-demo', false), name: LS.get('fz-name', ''),
   key: LS.get('fz-gemini-key', ''), model: LS.get('fz-gemini-model', CFG.defaultModel || MODELS[0]), gemLastMs: LS.get('fz-gem-last', 0), tabIds: null,
-  setup: null, busy: '', selBill: null, askText: '', answer: null, asking: false, voice: null
+  setup: null, busy: '', selBill: null, viewYM: null, askText: '', answer: null, asking: false, voice: null
 };
-let VIEW = 'inicio', PLANTAB = 'presupuesto', PF = { tipo: '', cat: '', month: '' };
+let VIEW = 'inicio', PLANTAB = 'presupuesto', PF = { tipo: '', cat: '' };
 let R = null;  // borrador de movimiento
 let W = null;  // guía de presupuesto
 
@@ -101,9 +101,13 @@ const K_GOAL = [['name', 'meta'], ['target', 'monto meta'], ['antes', 'ahorrado 
 
 /* ================= modelo de datos (mismas reglas que la hoja) ================= */
 function source() { return S.demo ? demoRaw() : S.raw; }
-function build() {
-  const raw = source(); const T = today(); const ym = T.slice(0, 7);
-  const [Y, M, Dd] = T.split('-').map(Number); const dim = daysIn(Y, M);
+/* build({ view: true }) arma los datos del mes elegido en el selector; sin eso, siempre el mes actual (formularios, guía). */
+function build(opts = {}) {
+  const raw = source(); const realT = today(); const curYM = realT.slice(0, 7);
+  const ym = opts.view && S.viewYM ? S.viewYM : curYM; const past = ym < curYM, future = ym > curYM;
+  const [Y, M] = ym.split('-').map(Number); const dim = daysIn(Y, M);
+  const T = past ? `${ym}-${pad(dim)}` : future ? `${ym}-01` : realT; const Dd = +T.slice(8, 10);
+  const asOf = past ? T : '9999-12-31';   // en un mes pasado, deudas y metas se ven como estaban al cierre
   // Listas (columnas independientes)
   const L = raw.lists || []; const lh = L.findIndex(r => (r || []).some(c => norm(c) === 'categoria'));
   const lhead = lh >= 0 ? L[lh].map(norm) : [];
@@ -129,8 +133,8 @@ function build() {
   for (const d of debts) {
     const since = d.fechaSaldo || '0000';
     d.card = isCard(d);
-    d.compras = d.card ? sum(movs.filter(m => m.tipo === 'Gasto' && norm(m.metodo) === norm(d.name) && m.fecha >= since).map(m => m.monto)) : 0;
-    d.pagos = sum(movs.filter(m => m.tipo === 'Pago de deuda' && norm(m.link) === norm(d.name) && m.fecha >= since).map(m => m.monto));
+    d.compras = d.card ? sum(movs.filter(m => m.tipo === 'Gasto' && norm(m.metodo) === norm(d.name) && m.fecha >= since && m.fecha <= asOf).map(m => m.monto)) : 0;
+    d.pagos = sum(movs.filter(m => m.tipo === 'Pago de deuda' && norm(m.link) === norm(d.name) && m.fecha >= since && m.fecha <= asOf).map(m => m.monto));
     d.saldo = d.inicial + d.compras - d.pagos; d.pctp = (d.inicial + d.compras) ? d.pagos / (d.inicial + d.compras) : null;
     d.meses = d.cuota ? Math.ceil(Math.max(0, d.saldo) / d.cuota) : null;
   }
@@ -138,7 +142,7 @@ function build() {
   // Metas
   const gt = table(raw.goals, K_GOAL);
   const goals = gt.rows.map(r => ({ row: r._row, name: String(r.name).trim(), target: pMoney(r.target), antes: pMoney(r.antes) })).filter(g => g.name);
-  for (const g of goals) { g.aportes = sum(movs.filter(m => m.tipo === 'Ahorro' && norm(m.link) === norm(g.name)).map(m => m.monto)); g.total = g.antes + g.aportes; g.pct = g.target > 0 ? g.total / g.target : null; g.falta = Math.max(0, g.target - g.total); }
+  for (const g of goals) { g.aportes = sum(movs.filter(m => m.tipo === 'Ahorro' && norm(m.link) === norm(g.name) && m.fecha <= asOf).map(m => m.monto)); g.total = g.antes + g.aportes; g.pct = g.target > 0 ? g.total / g.target : null; g.falta = Math.max(0, g.target - g.total); }
   // Cuentas por pagar
   const B = raw.bills || []; let avisar = 5;
   for (const r of B) (r || []).forEach((c, i) => { if (/avisar con/.test(norm(c))) { const v = pNum((r || [])[i + 1]); if (v != null) avisar = v; } });
@@ -195,7 +199,11 @@ function build() {
     hist.push({ m, n: xs.length, inc: t('Ingreso'), gas: t('Gasto'), pd: t('Pago de deuda'), ah: t('Ahorro'), saldo: t('Ingreso') - (t('Gasto') - tar + t('Pago de deuda') + t('Ahorro')) });
   }
   const ingresoEsperado = pMoney(prof['ingreso mensual esperado']) || (hist.filter(h => h.n && h.m < ym).length ? sum(hist.filter(h => h.n && h.m < ym).slice(-3).map(h => h.inc)) / Math.min(3, hist.filter(h => h.n && h.m < ym).length) : ingresos);
-  const D = { T, ym, Y, M, Dd, dim, dayFrac: Dd / dim, daysLeft: dim - Dd, movs, mm, cats: catList, metodos: metodos.length ? metodos : TPL.METODOS.slice(), listsInfo,
+  const firstM = movs.length ? movs[movs.length - 1].fecha.slice(0, 7) : curYM, lastM = movs.length ? movs[0].fecha.slice(0, 7) : curYM;
+  let mTop = addYM(curYM, 1); if (lastM > mTop) mTop = lastM; let mBottom = firstM < curYM ? firstM : curYM; if (mBottom < addYM(curYM, -35)) mBottom = addYM(curYM, -35);
+  const months = []; for (let m = mTop; m >= mBottom && months.length < 48; m = addYM(m, -1)) months.push(m);
+  if (!months.includes(ym)) { months.push(ym); months.sort().reverse(); }
+  const D = { T, ym, Y, M, Dd, dim, today: realT, curYM, past, future, months, dayFrac: past ? 1 : future ? 0 : Dd / dim, daysLeft: past ? 0 : future ? dim : dim - Dd, movs, mm, cats: catList, metodos: metodos.length ? metodos : TPL.METODOS.slice(), listsInfo,
     bills, unpaid, owed, left: saldo - owed, debts, cards, cardNames, goals, fondo, budgets, budgetTotal, fixedCosts, saveCat, prof, ingresoEsperado,
     ingresos, gastos, conTarjeta, pagosDeuda, ahorro, salidas, saldo, deudaTotal, hist, avisar, movHead: mt.idx, billHead: bt.idx,
     links: { bills: bills.filter(b => b.st !== 'ended').map(b => b.name), debts: debts.map(d => d.name), goals: goals.map(g => g.name) },
@@ -206,7 +214,9 @@ function build() {
 }
 const ST_LABEL = { paid: 'Pagada', late: 'Vencida', soon: 'Vence pronto', pend: 'Pendiente', sched: 'Programada', ended: 'Terminada' };
 const ST_CLASS = { paid: 'ok', late: 'late', soon: 'soon', pend: '', sched: '', ended: '' };
-function dueText(b) {
+function dueText(b, past) {
+  if (past && b.st === 'late') return 'Sin pago registrado';
+  if (past && b.st === 'paid') return `Pagada el día límite ${+b.fechaMes.slice(8, 10)}`.replace(/ el día límite \d+/, '');
   if (b.st === 'paid') return `Pagada · próxima ${dm(b.proximo)}`; if (b.st === 'ended') return 'Terminada'; if (b.st === 'sched') return b.primer ? `Empieza en ${MES[+b.primer.slice(5, 7) - 1]}` : 'Programada';
   const d = b.dias; if (d < 0) return `Venció hace ${-d} día${d === -1 ? '' : 's'}`; if (d === 0) return 'Vence hoy'; if (d === 1) return 'Vence mañana'; return `Vence en ${d} días`;
 }
@@ -214,28 +224,31 @@ function dueText(b) {
 /* ================= sugerencias (reglas locales) ================= */
 function advice(D) {
   const out = []; const add = (lv, icon, title, body, act) => out.push({ lv, icon, title, body, act });
-  const late = D.bills.filter(b => b.st === 'late'), soon = D.bills.filter(b => b.st === 'soon');
-  if (!D.mm.some(m => m.tipo === 'Ingreso') && (D.bills.length || D.budgetTotal)) add('tip', 'arrowIn', 'Registra tu ingreso de este mes', `${D.ingresoEsperado ? `Tu plan cuenta con ${money(D.ingresoEsperado)} al mes. ` : ''}Regístralo cuando te llegue para ver cuánto te queda.`, { label: 'Registrar ingreso', reg: { tipo: 'Ingreso' } });
-  if (late.length) add('urgent', 'alert', `${late.length} cuenta${late.length > 1 ? 's' : ''} vencida${late.length > 1 ? 's' : ''}`, `${late.map(b => b.name).join(', ')} · ${money(sum(late.map(b => b.monto)))}. Si ya la pagaste, regístrala.`, { label: 'Ver cuentas', go: 'cuentas' });
-  if (D.left < 0 && D.owed > 0) add('urgent', 'wallet', 'El saldo no cubre las cuentas del mes', `Saldo del mes ${money(D.saldo)} y faltan ${money(D.owed)} en cuentas por pagar. Te faltan ${money(-D.left)}.`, { label: 'Ver cuentas', go: 'cuentas' });
-  else if (D.saldo < 0 && D.ingresos > 0) add('warning', 'wallet', 'Salió más de lo que entró', `Este mes salieron ${money(D.salidas)} y entraron ${money(D.ingresos)}.`, { label: 'Ver plan', go: 'plan' });
+  const late = D.bills.filter(b => b.st === 'late'), soon = D.bills.filter(b => b.st === 'soon'); const P = D.past, mes = MES[D.M - 1];
+  if (!P && !D.mm.some(m => m.tipo === 'Ingreso') && (D.bills.length || D.budgetTotal)) add('tip', 'arrowIn', 'Registra tu ingreso de este mes', `${D.ingresoEsperado ? `Tu plan cuenta con ${money(D.ingresoEsperado)} al mes. ` : ''}Regístralo cuando te llegue para ver cuánto te queda.`, { label: 'Registrar ingreso', reg: { tipo: 'Ingreso' } });
+  if (late.length && P) add('tip', 'alert', `${late.length} cuenta${late.length > 1 ? 's' : ''} sin pago registrado en ${mes}`, `${late.map(b => b.name).join(', ')} · ${money(sum(late.map(b => b.monto)))}. Si las pagaste, regístralas con su fecha.`, { label: 'Ver cuentas', go: 'cuentas' });
+  else if (late.length) add('urgent', 'alert', `${late.length} cuenta${late.length > 1 ? 's' : ''} vencida${late.length > 1 ? 's' : ''}`, `${late.map(b => b.name).join(', ')} · ${money(sum(late.map(b => b.monto)))}. Si ya la pagaste, regístrala.`, { label: 'Ver cuentas', go: 'cuentas' });
+  if (!P && D.left < 0 && D.owed > 0) add('urgent', 'wallet', 'El saldo no cubre las cuentas del mes', `Saldo del mes ${money(D.saldo)} y faltan ${money(D.owed)} en cuentas por pagar. Te faltan ${money(-D.left)}.`, { label: 'Ver cuentas', go: 'cuentas' });
+  else if (D.saldo < 0 && D.ingresos > 0) add('warning', 'wallet', 'Salió más de lo que entró', `${P ? 'En ' + mes : 'Este mes'} salieron ${money(D.salidas)} y entraron ${money(D.ingresos)}.`, { label: 'Ver plan', go: 'plan' });
   if (D.ingresos > 0) { const r = D.gastos / D.ingresos;
-    if (r > .9) add('urgent', 'trend', `Llevas ${pct(r)} de tus ingresos en gastos`, `Gastos ${money(D.gastos)} de ${money(D.ingresos)}.`, { label: 'Ver plan', go: 'plan' });
+    if (P) { if (r > .9) add('warning', 'trend', `Gastaste el ${pct(r)} de tus ingresos`, `Gastos ${money(D.gastos)} de ${money(D.ingresos)} en ${mes}.`, { label: 'Ver plan', go: 'plan' }); }
+    else if (r > .9) add('urgent', 'trend', `Llevas ${pct(r)} de tus ingresos en gastos`, `Gastos ${money(D.gastos)} de ${money(D.ingresos)}.`, { label: 'Ver plan', go: 'plan' });
     else if (r > .75) add('warning', 'trend', `Llevas ${pct(r)} de tus ingresos en gastos`, `Gastos ${money(D.gastos)} de ${money(D.ingresos)}. ${quedan(D.daysLeft)} del mes.`, { label: 'Ver plan', go: 'plan' }); }
-  if (soon.length) add('warning', 'cal', `${soon.length} cuenta${soon.length > 1 ? 's vencen' : ' vence'} pronto`, soon.map(b => `${b.name} · ${money(b.monto)} · ${dueText(b).toLowerCase()}`).join('\n'), { label: 'Ver cuentas', go: 'cuentas' });
-  if (D.left >= 0 && D.ingresos > 0 && D.left < .15 * D.ingresos) add('warning', 'wallet', 'Margen apretado', `Después de las cuentas te quedan ${money(D.left)}, menos del 15% de tus ingresos.`);
+  if (!P && soon.length) add('warning', 'cal', `${soon.length} cuenta${soon.length > 1 ? 's vencen' : ' vence'} pronto`, soon.map(b => `${b.name} · ${money(b.monto)} · ${dueText(b).toLowerCase()}`).join('\n'), { label: 'Ver cuentas', go: 'cuentas' });
+  if (!P && D.left >= 0 && D.ingresos > 0 && D.left < .15 * D.ingresos) add('warning', 'wallet', 'Margen apretado', `Después de las cuentas te quedan ${money(D.left)}, menos del 15% de tus ingresos.`);
   for (const b of D.budgets.filter(b => b.budget > 0 && b.pct > 1).sort((a, b) => b.pct - a.pct)) add('warning', CAT_ICON(b.name), `${b.name} pasó su presupuesto`, `${money(b.spent)} de ${money(b.budget)} (${pct(b.pct)}).`, b.fixed ? { label: 'Ver plan', go: 'plan' } : { label: 'Ajustar presupuesto', budget: b.name });
   for (const b of D.budgets.filter(b => !b.fixed && b.budget > 0 && b.pct <= 1 && b.pct >= .5 && b.pct - D.dayFrac >= .2)) add('warning', CAT_ICON(b.name), `${b.name} va adelantado`, `Usaste ${pct(b.pct)} con ${pct(D.dayFrac)} del mes. Te quedan ${money(b.remaining)}.`, { label: 'Ver plan', go: 'plan' });
   const nob = D.budgets.filter(b => !b.fixed && !(b.budget > 0) && b.spent > 0);
   if (nob.length) add('tip', 'grid', 'Categorías sin presupuesto', `${nob.map(b => `${b.name} (${money(b.spent)})`).join(', ')}.`, { label: `Ponerle presupuesto a ${nob[0].name}`, budget: nob[0].name });
-  for (const c of D.cards.filter(c => c.saldo > 0)) add('tip', 'card', `${c.name}: ${money(c.saldo)}`, `Paga el saldo completo antes del día ${c.dia || 'de pago'} para no pagar intereses.`);
-  if (D.ingresos > 0 && D.ahorro < .1 * D.ingresos) add('tip', 'target', 'Ahorro bajo este mes', `Ahorraste ${money(D.ahorro)}. Separa el 10% (${money(Math.round(D.ingresos * .1 / 1000) * 1000)}) el día de pago.`, { label: 'Registrar ahorro', reg: { tipo: 'Ahorro', link: D.fondo?.name || '' } });
+  if (!P) for (const c of D.cards.filter(c => c.saldo > 0)) add('tip', 'card', `${c.name}: ${money(c.saldo)}`, `Paga el saldo completo antes del día ${c.dia || 'de pago'} para no pagar intereses.`);
+  if (P && D.ingresos > 0 && D.ahorro < .1 * D.ingresos) add('tip', 'target', `Ahorro bajo en ${mes}`, `Ahorraste ${money(D.ahorro)}, el ${pct(D.ahorro / D.ingresos)} de tus ingresos. La meta es al menos el 10%.`);
+  else if (D.ingresos > 0 && D.ahorro < .1 * D.ingresos) add('tip', 'target', 'Ahorro bajo este mes', `Ahorraste ${money(D.ahorro)}. Separa el 10% (${money(Math.round(D.ingresos * .1 / 1000) * 1000)}) el día de pago.`, { label: 'Registrar ahorro', reg: { tipo: 'Ahorro', link: D.fondo?.name || '' } });
   const f = D.fondo;
-  if (f && f.target > 0 && f.total < f.target) { const monthly = D.saveCat?.budget > 0 ? D.saveCat.budget : Math.max(50000, Math.round((D.ingresoEsperado || 0) * .05 / 1000) * 1000); const months = Math.ceil(f.falta / monthly);
+  if (!P && f && f.target > 0 && f.total < f.target) { const monthly = D.saveCat?.budget > 0 ? D.saveCat.budget : Math.max(50000, Math.round((D.ingresoEsperado || 0) * .05 / 1000) * 1000); const months = Math.ceil(f.falta / monthly);
     let body = `Llevas ${money(f.total)} de ${money(f.target)}. Con ${money(monthly)} al mes lo completas en ${months} mes${months > 1 ? 'es' : ''}.`;
     if (D.fixedCosts > 0 && f.target < D.fixedCosts) body += ` La meta cubre menos de un mes de gastos fijos (${money(D.fixedCosts)}); la siguiente podría ser ${money(D.fixedCosts * 3)}.`;
     add('tip', 'shield', 'Fondo de emergencia', body, { label: 'Aportar', reg: { tipo: 'Ahorro', link: f.name, monto: monthly } }); }
-  if (!out.some(o => o.lv === 'urgent' || o.lv === 'warning')) out.unshift({ lv: 'good', icon: 'check', title: 'Vas bien este mes', body: 'Nada urgente: cuentas al día y presupuestos dentro del plan.' });
+  if (!out.some(o => o.lv === 'urgent' || o.lv === 'warning')) out.unshift(P ? { lv: 'good', icon: 'check', title: `${cap(mes)} terminó bien`, body: 'Sin cuentas pendientes ni presupuestos pasados.' } : { lv: 'good', icon: 'check', title: 'Vas bien este mes', body: 'Nada urgente: cuentas al día y presupuestos dentro del plan.' });
   const order = { urgent: 0, warning: 1, tip: 2, good: 3 }; return out.sort((a, b) => order[a.lv] - order[b.lv]);
 }
 
@@ -258,7 +271,7 @@ const P = {
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.5-3.6 3.2-5.5 6.5-5.5s6 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.6c2.8.2 4.9 1.9 5.5 5.4"/>',
   arrowIn: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', book: '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19"/>',
   piggy: '<path d="M19 11c0-3.3-3.1-6-7-6S5 7.7 5 11c0 1.8.9 3.4 2.4 4.5V19h3v-2h3.2v2h3v-3.6c1-.7 1.8-1.6 2.2-2.6H21v-3h-2.1"/><circle cx="15.5" cy="10" r=".8"/>',
-  sheet: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/>', eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  chev: '<path d="M6 9.5l6 6 6-6"/>', sheet: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/>', eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>', key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
   phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>', wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.6 16a5 5 0 0 1 6.8 0"/><circle cx="12" cy="19" r=".9"/>',
   logout: '<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>', health: '<path d="M12 20.5s-8.5-4.8-8.5-11A4.8 4.8 0 0 1 12 6.6a4.8 4.8 0 0 1 8.5 2.9c0 6.2-8.5 11-8.5 11z"/><path d="M12 10v5M9.5 12.5h5"/>',
@@ -507,7 +520,7 @@ Clasifica la ENTRADA en una de cuatro intenciones:
 3) "nueva_deuda": la persona cuenta que tiene una deuda NUEVA que no está en LISTAS.deudas (un préstamo, una tarjeta nueva, plata que le debe a alguien). Pon un nombre corto en "vinculo", el saldo total en "monto" y, si los dice, la "cuota" mensual, el "dia_pago" y el "deuda_tipo".
 4) "presupuesto": quiere crear o cambiar el presupuesto mensual de una categoría de gasto. Pon la categoría en "categoria" (el nombre exacto si ya existe en LISTAS.categorias_gasto, o un nombre nuevo corto) y el monto mensual en "monto".
 Montos (Colombia): el punto separa miles: "53.000" = 53000, "1.250.000" = 1250000. "mil" o "lucas" = 1.000 ("25 mil" = 25000, "20 lucas" = 20000), "un millón" o "un palo" = 1000000. Montos en pesos enteros.
-Fechas: hoy es ${WEEKDAY(D.T)} ${D.T}. Interpreta "ayer", "el lunes" o "el 5" respecto a hoy. Si no dice fecha, usa hoy. Formato YYYY-MM-DD.
+Fechas: hoy es ${WEEKDAY(D.today)} ${D.today}. Interpreta "ayer", "el lunes" o "el 5" respecto a hoy. Si no dice fecha, usa hoy. Formato YYYY-MM-DD.
 Tipo: "Pago de deuda" solo si paga una deuda de LISTAS.deudas (pagar la tarjeta de crédito también); vinculo = el nombre exacto de esa deuda. Pagar una cuenta de LISTAS.cuentas_por_pagar es "Gasto" con vinculo = esa cuenta y su categoría. "Ahorro" si guarda plata para una meta de LISTAS.metas (vinculo = la meta). Una compra con tarjeta de crédito es "Gasto" con metodo = el nombre de la tarjeta.
 Usa solo valores de LISTAS para categoria, metodo y vinculo; deja vacío si nada encaja. Da una confianza de 0 a 1 por campo.
 LISTAS: ${JSON.stringify(listsForAI(D))}` }];
@@ -539,9 +552,9 @@ async function geminiDebt(D, x) {
 function qContext(D) {
   const prev = addYM(D.ym, -1); const row = m => [dmy(m.fecha), m.tipo, m.categoria, m.desc, m.monto, m.metodo || '', m.link || ''];
   const group = (xs, key) => { const o = {}; for (const m of xs) { const k = key(m) || 'Sin dato'; o[k] = (o[k] || 0) + m.monto; } return o; };
-  const now = D.mm.filter(m => m.fecha <= D.T);
+  const now = D.future ? D.mm : D.mm.filter(m => m.fecha <= D.T);
   return {
-    hoy: `${WEEKDAY(D.T)} ${dmy(D.T)}`, mes_actual: monthName(D.ym), dias_que_faltan_del_mes: D.daysLeft,
+    hoy: `${WEEKDAY(D.today)} ${dmy(D.today)}`, mes_consultado: monthName(D.ym), estado_del_mes: D.past ? 'cerrado' : D.future ? 'aún no empieza' : 'en curso', dias_que_faltan_del_mes: D.daysLeft,
     como_leer: 'saldo_del_mes = ingresos − (gastos pagados sin tarjeta de crédito + pagos a deudas + ahorro). Las compras con tarjeta de crédito no salen del saldo: suben la deuda de la tarjeta y se pagan después como pago de deuda. te_queda = saldo_del_mes − cuentas por pagar que faltan este mes.',
     resumen_del_mes: { ingresos: D.ingresos, ingreso_mensual_esperado: Math.round(D.ingresoEsperado || 0), gastos_totales: D.gastos, gastos_con_tarjeta_de_credito: D.conTarjeta, pagos_a_deudas: D.pagosDeuda, ahorro: D.ahorro,
       saldo_del_mes: D.saldo, cuentas_por_pagar_que_faltan: D.owed, te_queda: D.left, deuda_total: Math.round(D.deudaTotal) },
@@ -551,7 +564,7 @@ function qContext(D) {
     deudas: D.debts.map(d => ({ deuda: d.name, tipo: d.tipo, saldo_actual: Math.round(d.saldo), cuota_mensual: d.cuota || null, dia_pago: d.dia, compras_con_tarjeta: d.compras, pagos_registrados: d.pagos, meses_restantes: d.meses })),
     metas: D.goals.map(g => ({ meta: g.name, meta_monto: g.target, ahorrado: g.total, falta: g.falta })),
     columnas_de_movimientos: ['fecha', 'tipo', 'categoria', 'descripcion', 'monto', 'metodo', 'cuenta_deuda_o_meta'],
-    movimientos_del_mes: now.slice(0, 300).map(row), movimientos_con_fecha_futura: D.movs.filter(m => m.fecha > D.T).slice(0, 30).map(row),
+    movimientos_del_mes: now.slice(0, 300).map(row), movimientos_con_fecha_futura: D.movs.filter(m => m.fecha > D.today).slice(0, 30).map(row),
     gasto_por_categoria_mes_anterior: group(D.movs.filter(m => m.fecha.slice(0, 7) === prev && m.tipo === 'Gasto'), m => m.categoria),
     meses_anteriores: D.hist.filter(h => h.n && h.m < D.ym).slice(-6).map(h => ({ mes: monthName(h.m), ingresos: h.inc, gastos: h.gas, pagos_a_deudas: h.pd, ahorro: h.ah, saldo: h.saldo }))
   };
@@ -607,7 +620,7 @@ function render(opt = {}) {
   document.body.classList.toggle('setup', !!gate);
   document.body.classList.toggle('notab', !!gate || VIEW === 'guia');
   const keep = window.scrollY;
-  $('#view').innerHTML = gate || (VIEWS[VIEW] || VIEWS.inicio)(build());
+  $('#view').innerHTML = gate || (VIEWS[VIEW] || VIEWS.inicio)(build({ view: VIEW !== 'registrar' && VIEW !== 'guia' }));
   $('#tabbar').innerHTML = gate ? '' : tabbar();
   if (keep && VIEW === LAST_VIEW && !gate) window.scrollTo(0, keep);
   LAST_VIEW = VIEW;
@@ -624,6 +637,18 @@ function tabbar() {
 function header(title, sub) {
   return `<header class="top"><div class="grow"><div class="hello">${esc(sub)}</div><h1>${esc(title)}</h1></div>
     <button class="ib" data-act="settings" aria-label="Ajustes"><span class="av"><i>${esc(initials(S.name || build().prof.nombre))}</i></span></button></header>`;
+}
+function header2(h1Html, helloHtml) {
+  return `<header class="top"><div class="grow"><div class="hello">${helloHtml}</div><h1>${h1Html}</h1></div>
+    <button class="ib" data-act="settings" aria-label="Ajustes"><span class="av"><i>${esc(initials(S.name || build().prof.nombre))}</i></span></button></header>`;
+}
+/* Selector de mes: el texto visible es el mes; el <select> invisible encima abre la lista nativa del teléfono. */
+function monthPicker(D, big) {
+  return `<label class="msel ${big ? 'big' : ''}"><span>${esc(monthName(D.ym))}</span>${ic('chev')}<select id="f-month" aria-label="Elegir el mes que quieres ver">${D.months.map(m => `<option value="${m}" ${m === D.ym ? 'selected' : ''}>${esc(monthName(m))}${m === D.curYM ? ' (este mes)' : ''}</option>`).join('')}</select></label>`;
+}
+function monthBanner(D) {
+  if (D.ym === D.curYM) return '';
+  return `<div class="banner">${ic('cal')}<span class="grow">Estás viendo <b>${esc(monthName(D.ym))}</b>, ${D.past ? 'un mes cerrado' : 'un mes que aún no empieza'}.</span><button class="btn sm" data-act="month-now">Ir a ${esc(MES[+D.curYM.slice(5, 7) - 1])}</button></div>`;
 }
 function syncLine() {
   if (S.demo) return `<div class="sync"><span class="dot off"></span><span>Datos de ejemplo · tu hoja no se toca</span><button data-act="demo-off">Usar mi hoja</button></div>`;
@@ -697,21 +722,21 @@ function maybeGuide() { const D = build(); if (S.key && D.ok && D.empty && VIEW 
 /* ---------- Inicio ---------- */
 function vInicio(D) {
   if (!D.ok) return header(monthName(today().slice(0, 7)), `Hola${S.name ? ', ' + S.name : ''}`) + syncLine() + errBanner() + skeleton();
-  const neg = D.left < 0; const spentPct = D.ingresos > 0 ? D.gastos / D.ingresos : null;
-  const next = D.unpaid.slice().sort((a, b) => a.proximo < b.proximo ? -1 : 1).slice(0, 4);
-  const name = S.name || D.prof.nombre || '';
-  return header(monthName(D.ym), `Hola${name ? ', ' + name : ''}`) + syncLine() + `<div class="stack">${demoBanner()}${errBanner()}
+  const P = D.past, mes = MES[D.M - 1]; const neg = P ? D.saldo < 0 : D.left < 0; const spentPct = D.ingresos > 0 ? D.gastos / D.ingresos : null;
+  const next = (P ? D.bills.filter(b => b.st === 'late') : D.unpaid).slice().sort((a, b) => a.proximo < b.proximo ? -1 : 1).slice(0, 4);
+  const name = S.name || D.prof.nombre || ''; const bigVal = P ? D.saldo : D.left;
+  return header2(monthPicker(D, true), esc(`Hola${name ? ', ' + name : ''}`)) + syncLine() + `<div class="stack">${demoBanner()}${errBanner()}${monthBanner(D)}
     ${D.empty ? `<div class="tipcard lv-tip"><span class="cav">${ic('sparkle')}</span><div><b>Arma tu presupuesto</b><p>Gemini te guía paso a paso: ingresos, cuentas fijas, deudas, gastos y metas.</p><div class="acts"><a class="btn sm pri" href="#guia">Empezar</a></div></div></div>` : ''}
-    <section class="hero ${neg ? 'neg' : ''}" aria-label="Lo que queda del mes">
-      <div class="row1"><span class="lbl">${neg ? 'Te faltan' : 'Te quedan'}</span><span class="left n">${quedan(D.daysLeft)}</span></div>
-      <div class="big n">${S.hide ? '$ •••••' : `<small>$</small>${fmt(D.left).slice(1)}`}</div>
-      <div class="calc n">Saldo del mes ${money(D.saldo)} − cuentas por pagar ${money(D.owed)}</div>
+    <section class="hero ${neg ? 'neg' : ''}" aria-label="${P ? 'Saldo del mes' : 'Lo que queda del mes'}">
+      <div class="row1"><span class="lbl">${P ? 'Saldo del mes' : neg ? 'Te faltan' : 'Te quedan'}</span><span class="left n">${P ? 'Mes cerrado' : D.future ? 'Aún no empieza' : quedan(D.daysLeft)}</span></div>
+      <div class="big n">${S.hide ? '$ •••••' : `${P && bigVal < 0 ? '−' : ''}<small>$</small>${fmt(bigVal).slice(1)}`}</div>
+      <div class="calc n">${P ? `Ingresos ${money(D.ingresos)} − salidas ${money(D.salidas)}` : `Saldo del mes ${money(D.saldo)} − cuentas por pagar ${money(D.owed)}`}</div>
       <div class="bar" role="img" aria-label="Porcentaje de ingresos gastado"><i style="width:${Math.min(100, (spentPct || 0) * 100).toFixed(1)}%"></i></div>
-      <div class="sub n">${spentPct == null ? 'Registra tus ingresos para ver cuánto llevas gastado.' : `Has gastado el ${pct(spentPct)} de tus ingresos`}</div>
+      <div class="sub n">${spentPct == null ? (P ? `No hay ingresos registrados en ${mes}.` : 'Registra tus ingresos para ver cuánto llevas gastado.') : `${P ? 'Gastaste' : 'Has gastado'} el ${pct(spentPct)} de tus ingresos`}</div>
     </section>
     ${monthLine(D)}
-    <section><div class="sec"><h2>Por pagar</h2><a class="lnk" href="#cuentas">Ver cuentas</a></div>
-      ${next.length ? `<div class="card pad0"><div class="list div">${next.map(b => billRow(b, true)).join('')}</div></div>` : `<div class="card"><div class="empty"><b>Todo pagado</b>No hay cuentas pendientes este mes.</div></div>`}</section>
+    <section><div class="sec"><h2>${P ? 'Sin pago registrado' : 'Por pagar'}</h2><a class="lnk" href="#cuentas">Ver cuentas</a></div>
+      ${next.length ? `<div class="card pad0"><div class="list div">${next.map(b => billRow(b, true, P)).join('')}</div></div>` : `<div class="card"><div class="empty"><b>Todo pagado</b>${P ? `Todas las cuentas de ${mes} quedaron pagadas.` : `No hay cuentas pendientes en ${mes}.`}</div></div>`}</section>
     <section><div class="sec"><h2>Números del mes</h2></div><div class="tiles">
       ${tile('Ingresos', money(D.ingresos), 'in', D.ingresoEsperado ? `Esperado ${money(D.ingresoEsperado)}` : '—')}
       ${tile('Gastos', money(D.gastos), '', `${money(D.conTarjeta)} con tarjeta`)}
@@ -723,8 +748,8 @@ function vInicio(D) {
       ${tile('Fondo de emergencia', D.fondo ? pct0(D.fondo.pct) : '—', '', D.fondo ? (D.fondo.target ? `Faltan ${money(D.fondo.falta)}` : 'Sin meta') : 'Sin meta')}
     </div></section>
     ${D.tips[0] ? `<section><div class="sec"><h2>Sugerencia</h2><a class="lnk" href="#consejos">Ver todas</a></div>${tipCard(D.tips[0])}</section>` : ''}
-    <section><div class="sec"><h2>Últimos movimientos</h2><a class="lnk" href="#movimientos">Ver todos</a></div>
-      ${D.movs.length ? `<div class="card pad0"><div class="list div">${D.movs.slice(0, 6).map(movRow).join('')}</div></div>` : `<div class="card"><div class="empty"><b>Sin movimientos</b>Toca + para registrar el primero.</div></div>`}</section>
+    <section><div class="sec"><h2>Movimientos de ${mes}</h2><a class="lnk" href="#movimientos">Ver todos</a></div>
+      ${D.mm.length ? `<div class="card pad0"><div class="list div">${D.mm.slice(0, 6).map(movRow).join('')}</div></div>` : `<div class="card"><div class="empty"><b>Sin movimientos en ${mes}</b>Toca + para registrar uno.</div></div>`}</section>
   </div>`;
 }
 function tile(label, value, cls, sub) { return `<div class="tile"><span class="lbl2">${label}</span><b class="n ${cls}">${value}</b><span class="n">${sub}</span></div>`; }
@@ -732,20 +757,20 @@ function monthLine(D) {
   const dots = D.bills.filter(b => b.st !== 'sched' && b.st !== 'ended').map(b => ({ b, day: +b.fechaMes.slice(8, 10) })).sort((a, b) => a.day - b.day);
   if (!dots.length) return '';
   const X = d => ((d - 1) / (D.dim - 1) * 100); const cls = { paid: 'ok', soon: 'soon', late: 'late', pend: 'pend' };
-  const sel = S.selBill && D.bills.find(b => b.name === S.selBill); const used = {};
+  const sel = S.selBill && D.bills.find(b => b.name === S.selBill); const used = {}; const now = !D.past && !D.future; const doneW = D.past ? 100 : D.future ? 0 : X(D.Dd);
   return `<section class="card pad"><div class="sec" style="margin-bottom:2px"><h2>Cuentas de ${MES[D.M - 1]}</h2><span class="muted n">${dots.filter(x => x.b.st === 'paid').length} de ${dots.length} pagadas</span></div>
-    <div class="mline"><div class="track"></div><div class="done" style="width:${X(D.Dd).toFixed(2)}%"></div><div class="today" style="left:${X(D.Dd).toFixed(2)}%"></div><div class="tl" style="left:${Math.min(95, Math.max(4, X(D.Dd))).toFixed(2)}%">Hoy</div>
-      ${[1, 10, 20, D.dim].filter(d => Math.abs(d - D.Dd) > 3).map(d => `<span class="ax n" style="left:${X(d).toFixed(2)}%">${d}</span>`).join('')}
+    <div class="mline"><div class="track"></div><div class="done" style="width:${doneW.toFixed(2)}%"></div>${now ? `<div class="today" style="left:${X(D.Dd).toFixed(2)}%"></div><div class="tl" style="left:${Math.min(95, Math.max(4, X(D.Dd))).toFixed(2)}%">Hoy</div>` : ''}
+      ${[1, 10, 20, D.dim].filter(d => !now || Math.abs(d - D.Dd) > 3).map(d => `<span class="ax n" style="left:${X(d).toFixed(2)}%">${d}</span>`).join('')}
       ${dots.map(({ b, day }) => { const k = used[day] = (used[day] || 0) + 1; return `<button class="dt ${cls[b.st] || 'pend'} ${sel && sel.name === b.name ? 'sel' : ''}" style="left:${X(day).toFixed(2)}%;top:${30 - Math.min(k - 1, 2) * 13}px" data-act="selbill" data-name="${esc(b.name)}" aria-label="${txt(b.name)}, ${ST_LABEL[b.st]}, día ${day}"></button>`; }).join('')}</div>
     <div class="legend"><span><i style="background:var(--good)"></i>Pagada</span><span><i style="background:var(--warn)"></i>Vence pronto</span><span><i style="background:var(--red)"></i>Vencida</span><span><i class="hollow"></i>Pendiente</span></div>
-    ${sel ? `<div class="selbill"><span class="cav">${ic(billIcon(sel))}</span><div class="tx"><b>${txt(sel.name)}</b><span class="${ST_CLASS[sel.st]}">${esc(dueText(sel))} · ${money(sel.monto)}</span></div>${sel.st === 'paid' ? `<span class="pill ok">${ic('check')}Pagada</span>` : `<button class="btn sm pri" data-act="pay" data-name="${esc(sel.name)}">Pagar</button>`}</div>` : `<p class="muted small" style="margin:8px 0 0">Toca un punto para ver la cuenta.</p>`}
+    ${sel ? `<div class="selbill"><span class="cav">${ic(billIcon(sel))}</span><div class="tx"><b>${txt(sel.name)}</b><span class="${ST_CLASS[sel.st]}">${esc(dueText(sel))} · ${money(sel.monto)}</span></div>${sel.st === 'paid' ? `<span class="pill ok">${ic('check')}Pagada</span>` : D.past ? `<span class="pill">Sin pago</span>` : `<button class="btn sm pri" data-act="pay" data-name="${esc(sel.name)}">Pagar</button>`}</div>` : `<p class="muted small" style="margin:8px 0 0">Toca un punto para ver la cuenta.</p>`}
   </section>`;
 }
-function billRow(b, compact) {
-  const d = b.proximo; const cls = ST_CLASS[b.st];
+function billRow(b, compact, past) {
+  const d = past ? b.fechaMes : b.proximo; const cls = ST_CLASS[b.st];
   return `<div class="row"><div class="date ${cls} n"><b>${+d.slice(8, 10)}</b><i>${MES3[+d.slice(5, 7) - 1]}</i></div>
-    <div class="tx"><b>${txt(b.name)}</b><span class="${cls}">${esc(dueText(b))}${compact ? '' : ` · ${esc(b.categoria)}`}</span></div>
-    <div class="rend"><span class="amt n">${money(b.monto)}</span>${b.st === 'paid' ? (compact ? '' : `<span class="pill ok">${ic('check')}Pagada</span>`) : (b.st === 'sched' || b.st === 'ended') ? `<span class="pill">${ST_LABEL[b.st]}</span>` : `<button class="btn sm ${b.st === 'late' || b.st === 'soon' ? 'pri' : ''}" data-act="pay" data-name="${esc(b.name)}">Pagar</button>`}</div></div>`;
+    <div class="tx"><b>${txt(b.name)}</b><span class="${cls}">${esc(dueText(b, past))}${compact ? '' : ` · ${esc(b.categoria)}`}</span></div>
+    <div class="rend"><span class="amt n">${money(b.monto)}</span>${b.st === 'paid' ? (compact ? '' : `<span class="pill ok">${ic('check')}Pagada</span>`) : (b.st === 'sched' || b.st === 'ended') ? `<span class="pill">${ST_LABEL[b.st]}</span>` : past ? `<span class="pill">Sin pago</span>` : `<button class="btn sm ${b.st === 'late' || b.st === 'soon' ? 'pri' : ''}" data-act="pay" data-name="${esc(b.name)}">Pagar</button>`}</div></div>`;
 }
 const movKey = m => [m.row, m.fecha, m.monto, m.desc].join('|');
 function movRow(m) {
@@ -765,13 +790,14 @@ function tipCard(t) {
 function vCuentas(D) {
   if (!D.ok) return header('Cuentas por pagar', monthName(today().slice(0, 7))) + syncLine() + errBanner() + skeleton();
   const pend = D.bills.filter(b => ['late', 'soon', 'pend'].includes(b.st)), paid = D.bills.filter(b => b.st === 'paid');
-  const groups = [['Vencidas', 'late'], ['Vencen pronto', 'soon'], ['Pendientes', 'pend'], ['Pagadas este mes', 'paid'], ['Programadas y terminadas', 'other']];
-  return header('Cuentas por pagar', monthName(D.ym)) + syncLine() + `<div class="stack">${demoBanner()}${errBanner()}
-    <div class="bsum"><div class="${D.bills.some(b => b.st === 'late') ? 'late' : ''}"><b class="n">${D.bills.filter(b => b.st === 'late').length}</b><span>Vencidas</span></div>
+  const P = D.past, mes = MES[D.M - 1];
+  const groups = [[P ? 'Sin pago registrado' : 'Vencidas', 'late'], ['Vencen pronto', 'soon'], ['Pendientes', 'pend'], [P ? `Pagadas en ${mes}` : 'Pagadas este mes', 'paid'], ['Programadas y terminadas', 'other']];
+  return header2('Cuentas por pagar', monthPicker(D)) + syncLine() + `<div class="stack">${demoBanner()}${errBanner()}${monthBanner(D)}
+    <div class="bsum"><div class="${D.bills.some(b => b.st === 'late') ? 'late' : ''}"><b class="n">${D.bills.filter(b => b.st === 'late').length}</b><span>${P ? 'Sin pago' : 'Vencidas'}</span></div>
       <div class="${D.bills.some(b => b.st === 'soon') ? 'soon' : ''}"><b class="n">${D.bills.filter(b => b.st === 'soon').length}</b><span>Vencen pronto</span></div><div><b class="n">${D.bills.length}</b><span>Cuentas</span></div></div>
-    <div class="tiles">${tile('Pendiente', money(sum(pend.map(b => b.monto))), pend.length ? 'bad' : '', `${pend.length} cuenta${pend.length === 1 ? '' : 's'}`)}${tile('Pagado este mes', money(sum(paid.map(b => b.pagado))), 'in', `${paid.length} cuenta${paid.length === 1 ? '' : 's'}`)}</div>
+    <div class="tiles">${tile(P ? 'Sin pago registrado' : 'Pendiente', money(sum(pend.map(b => b.monto))), pend.length ? 'bad' : '', `${pend.length} cuenta${pend.length === 1 ? '' : 's'}`)}${tile(P ? `Pagado en ${mes}` : 'Pagado este mes', money(sum(paid.map(b => b.pagado))), 'in', `${paid.length} cuenta${paid.length === 1 ? '' : 's'}`)}</div>
     ${groups.map(([t, k]) => { const list = D.bills.filter(b => k === 'other' ? (b.st === 'sched' || b.st === 'ended') : b.st === k).sort((a, b) => a.proximo < b.proximo ? -1 : 1);
-      return list.length ? `<section class="grp"><div class="lbl2"><span>${t}</span><span class="n">${money(sum(list.map(b => b.monto)))}</span></div><div class="card pad0"><div class="list div">${list.map(b => billRow(b, false)).join('')}</div></div></section>` : ''; }).join('')}
+      return list.length ? `<section class="grp"><div class="lbl2"><span>${t}</span><span class="n">${money(sum(list.map(b => b.monto)))}</span></div><div class="card pad0"><div class="list div">${list.map(b => billRow(b, false, P)).join('')}</div></div></section>` : ''; }).join('')}
     ${D.bills.length ? '' : `<div class="card"><div class="empty"><b>No hay cuentas</b>Agrégalas en la guía de presupuesto.</div></div>`}
     <a class="btn ghost lg wide" href="#guia">${ic('sparkle')}Agregar o cambiar cuentas</a>
     <p class="muted small" style="margin:0">Una cuenta queda Pagada cuando registras un movimiento con su nombre este mes. Avisa con ${D.avisar} días de anticipación.</p></div>`;
@@ -780,15 +806,15 @@ function vCuentas(D) {
 /* ---------- Movimientos ---------- */
 function vMovimientos(D) {
   if (!D.ok) return header('Movimientos', '') + skeleton();
-  const month = PF.month || D.ym;
+  const month = D.ym; const iM = D.months.indexOf(month);
   const list = D.movs.filter(m => m.fecha.slice(0, 7) === month && (!PF.tipo || m.tipo === PF.tipo) && (!PF.cat || m.categoria === PF.cat));
   const cats = [...new Set(D.movs.filter(m => m.fecha.slice(0, 7) === month).map(m => m.categoria))].sort();
   let html = '', last = '';
   for (const m of list) { if (m.fecha !== last) { if (last) html += '</div></div>'; last = m.fecha; html += `<div class="dayh">${esc(longDay(m.fecha))}</div><div class="card pad0"><div class="list div">`; } html += movRow(m); }
   if (last) html += '</div></div>';
-  return `<header class="top"><a class="ib" href="#inicio" aria-label="Volver">${ic('back')}</a><div class="grow"><div class="hello">${esc(monthName(month))}</div><h1>Movimientos</h1></div>
-    <button class="ib" data-act="mmonth" data-d="-1" aria-label="Mes anterior">${ic('back')}</button><button class="ib" data-act="mmonth" data-d="1" aria-label="Mes siguiente" ${month >= D.ym ? 'disabled' : ''}>${ic('fwd')}</button></header>
-    <div class="stack">${demoBanner()}
+  return `<header class="top"><a class="ib" href="#inicio" aria-label="Volver">${ic('back')}</a><div class="grow"><div class="hello">${monthPicker(D)}</div><h1>Movimientos</h1></div>
+    <button class="ib" data-act="mmonth" data-d="-1" aria-label="Mes anterior" ${iM >= D.months.length - 1 ? 'disabled' : ''}>${ic('back')}</button><button class="ib" data-act="mmonth" data-d="1" aria-label="Mes siguiente" ${iM <= 0 ? 'disabled' : ''}>${ic('fwd')}</button></header>
+    <div class="stack">${demoBanner()}${monthBanner(D)}
     <div class="seg" role="group" aria-label="Tipo">${['', ...TIPOS].map(t => `<button class="chip ${PF.tipo === t ? 'on' : ''}" data-act="ftipo" data-v="${esc(t)}">${t || 'Todos'}</button>`).join('')}</div>
     ${cats.length ? `<div class="seg" role="group" aria-label="Categoría">${['', ...cats].map(c => `<button class="chip ${PF.cat === c ? 'on' : ''}" data-act="fcat" data-v="${esc(c)}">${esc(c || 'Todas las categorías')}</button>`).join('')}</div>` : ''}
     <div class="muted n small">${list.length} movimiento${list.length === 1 ? '' : 's'} · Entradas ${money(sum(list.filter(m => m.tipo === 'Ingreso').map(m => m.monto)))} · Salidas ${money(sum(list.filter(m => m.tipo !== 'Ingreso').map(m => m.monto)))}</div>
@@ -816,7 +842,7 @@ function vPlan(D) {
       return `<div class="card pad stack" style="gap:10px"><div class="row" style="padding:0"><span class="cav g">${ic('card')}</span><div class="tx"><b>${txt(d.name)}</b><span>${esc(d.tipo)}${d.dia ? ` · paga el día ${d.dia}` : ''}</span></div><span class="amt n">${money(d.saldo)}<small>saldo actual</small></span></div>
         <div class="prog"><i style="width:${Math.min(100, Math.max(0, (d.pctp || 0) * 100)).toFixed(1)}%"></i></div>
         <div class="kv"><div>Pagado<b class="n">${pct(d.pctp)}</b></div><div>Cuota<b class="n">${cuota ? money(cuota) : '—'}</b></div><div>Meses<b class="n">${d.meses ?? '—'}</b></div></div>
-        <div class="row" style="padding:0;gap:8px"><div class="tx"><span style="white-space:normal">Este mes pagaste ${money(paidM)}${cuota ? ` de ${money(cuota)}` : ''}</span></div><button class="btn sm ${paidM >= cuota && cuota ? '' : 'pri'}" data-act="reg" data-reg="${esc(JSON.stringify({ tipo: 'Pago de deuda', link: d.name, monto: Math.max(0, cuota - paidM) || '' }))}">Registrar pago</button></div></div>`; }).join('')
+        <div class="row" style="padding:0;gap:8px"><div class="tx"><span style="white-space:normal">${D.ym === D.curYM ? 'Este mes pagaste' : `En ${MES[D.M - 1]} pagaste`} ${money(paidM)}${cuota ? ` de ${money(cuota)}` : ''}</span></div>${D.past ? '' : `<button class="btn sm ${paidM >= cuota && cuota ? '' : 'pri'}" data-act="reg" data-reg="${esc(JSON.stringify({ tipo: 'Pago de deuda', link: d.name, monto: Math.max(0, cuota - paidM) || '' }))}">Registrar pago</button>`}</div></div>`; }).join('')
       : `<div class="card"><div class="empty"><b>Sin deudas</b>Toca Agregar deuda si debes algo: un préstamo, una tarjeta o plata a alguien.</div></div>`;
     body = `<button class="btn pri lg wide" data-act="new-debt">${ic('plus')}Agregar deuda</button>` + body;
   } else if (PLANTAB === 'metas') {
@@ -829,7 +855,7 @@ function vPlan(D) {
     body = `<div class="card pad">${histChart(D)}</div><div class="card pad tblwrap"><table class="hist"><thead><tr><th>Mes</th><th>Ingresos</th><th>Gastos</th><th>Saldo</th></tr></thead><tbody>
       ${D.hist.slice().reverse().map(h => `<tr><td>${esc(monthName(h.m))}</td><td>${h.n ? money(h.inc) : '—'}</td><td>${h.n ? money(h.gas) : '—'}</td><td class="${h.n && h.saldo < 0 ? 'bad' : ''}">${h.n ? money(h.saldo) : '—'}</td></tr>`).join('')}</tbody></table></div>`;
   }
-  return header('Plan', monthName(D.ym)) + syncLine() + `<div class="stack">${demoBanner()}
+  return header2('Plan', monthPicker(D)) + syncLine() + `<div class="stack">${demoBanner()}${monthBanner(D)}
     <div class="seg" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${PLANTAB === k}" class="chip ${PLANTAB === k ? 'on' : ''}" data-act="ptab" data-v="${k}">${l}</button>`).join('')}</div>${body}</div>`;
 }
 function histChart(D) {
@@ -845,8 +871,8 @@ function histChart(D) {
 /* ---------- Consejos ---------- */
 function vConsejos(D) {
   if (!D.ok) return header('Consejos', '') + syncLine() + errBanner() + skeleton();
-  return header('Consejos', monthName(D.ym)) + syncLine() + `<div class="stack">${demoBanner()}
-    <section class="card pad stack" style="gap:10px"><div class="row" style="padding:0"><span class="cav g">${ic('sparkle')}</span><div class="tx"><b>Pregúntale a Gemini</b><span>Responde con tus números de este mes.</span></div></div>
+  return header2('Consejos', monthPicker(D)) + syncLine() + `<div class="stack">${demoBanner()}${monthBanner(D)}
+    <section class="card pad stack" style="gap:10px"><div class="row" style="padding:0"><span class="cav g">${ic('sparkle')}</span><div class="tx"><b>Pregúntale a Gemini</b><span>Responde con tus números de ${D.ym === D.curYM ? 'este mes' : esc(monthName(D.ym))}.</span></div></div>
       <form class="ask" id="askf" data-form><textarea id="ask-q" rows="1" placeholder="Pregunta sobre tu mes" aria-label="Pregunta">${esc(S.askText)}</textarea><button class="btn pri round" type="submit" ${S.asking ? 'disabled' : ''}>${S.asking ? '…' : 'Enviar'}</button></form>
       ${S.answer != null ? `<div class="answer">${S.answer ? esc(S.answer) : '<span class="typing" aria-label="Pensando"><i></i><i></i><i></i></span>'}</div>` : ''}</section>
     <div class="sec" style="margin:0"><h2>Para este mes</h2><span class="muted">${D.tips.filter(t => t.lv === 'urgent').length} urgentes</span></div>
@@ -854,7 +880,7 @@ function vConsejos(D) {
     <p class="muted small" style="margin:0">Estas sugerencias salen de reglas sobre tus números. Orientación general, no es asesoría financiera.</p></div>`;
 }
 async function askGemini(q) {
-  const D = build(); S.asking = true; S.answer = ''; S.askText = q; render();
+  const D = build({ view: true }); S.asking = true; S.answer = ''; S.askText = q; render();
   try { S.answer = await answerQ(D, q); S.askText = ''; }
   catch (e) { S.answer = gemMsg(e); }
   S.asking = false; render();
@@ -927,7 +953,7 @@ async function saveDirect() {
   r.err = ''; r.saving = true; render();
   try {
     const row = await appendMovement(m); if (m.metodo) LS.set('fz-metodo', m.metodo);
-    R = null; location.hash = '#inicio'; render();
+    R = null; S.viewYM = m.fecha.slice(0, 7) === today().slice(0, 7) ? null : m.fecha.slice(0, 7); location.hash = '#inicio'; render();
     toast(S.demo ? 'Guardado en el ejemplo' : `Guardado en tu hoja · ${money(m.monto)}`, { label: 'Deshacer', run: async () => {
       try { await deleteMovement({ ...m, row }); toast(S.demo ? 'Se borró del ejemplo' : 'Se borró de tu hoja'); render(); }
       catch (x) { toast(x.code === 'moved' || x.code === 'pending' ? 'No pude deshacerlo. Bórralo desde Movimientos.' : 'No se pudo deshacer: ' + (x.message || 'intenta de nuevo.')); } } });
@@ -970,7 +996,7 @@ function openConfirm(m, rev) {
     <div class="two"><button class="btn ghost lg" data-act="close-sheet">Corregir</button><button class="btn pri lg" id="c-save">${ic('check')}Guardar</button></div>`, root => {
     $('#c-sug', root)?.addEventListener('click', e => { m.categoria = sug; $('#c-cat', root).textContent = sug; e.currentTarget.remove(); if (R) R.categoria = sug; });
     $('#c-save', root).addEventListener('click', async e => { const b = e.currentTarget; b.disabled = true; b.textContent = 'Guardando…';
-      try { await appendMovement(m); if (m.metodo) LS.set('fz-metodo', m.metodo); closeSheet(); R = null; toast(S.demo ? 'Guardado en el ejemplo' : 'Guardado en tu hoja'); location.hash = '#inicio'; render(); }
+      try { await appendMovement(m); if (m.metodo) LS.set('fz-metodo', m.metodo); closeSheet(); R = null; S.viewYM = m.fecha.slice(0, 7) === today().slice(0, 7) ? null : m.fecha.slice(0, 7); toast(S.demo ? 'Guardado en el ejemplo' : 'Guardado en tu hoja'); location.hash = '#inicio'; render(); }
       catch (err) { $('#c-err', root).textContent = err.code === 'auth' ? 'Tu sesión de Google venció. Toca Continuar con Google y vuelve a guardar.' : err.code === 'network' ? 'Sin conexión. No se guardó.' : 'No se guardó: ' + (err.message || 'intenta de nuevo.'); b.disabled = false; b.innerHTML = ic('check') + 'Guardar'; if (err.code === 'auth') render(); } });
   });
 }
@@ -1093,13 +1119,13 @@ async function saveDebt(x) {
   const monthly = debtMonthly1(x); const debtCat = catFor(D, 'Pago de deuda');
   const last = !/tarjeta/i.test(x.tipo) && x.cuota ? addYM(x.start, Math.ceil(x.saldo / x.cuota) - 1) : '';
   if (S.demo) {
-    DEMO_NEW.debts.push([x.name, x.tipo, x.saldo, serial(D.T), x.cuota || '', x.dia]);
+    DEMO_NEW.debts.push([x.name, x.tipo, x.saldo, serial(D.today), x.cuota || '', x.dia]);
     if (monthly) DEMO_NEW.bills.push([x.name, debtCat, monthly, x.dia, '', '', '', '', '', '', x.start > D.ym ? monthText(x.start) : '', last ? monthText(last) : '']);
     return;
   }
   const data = []; const put = (range, values) => data.push({ range, values });
   const dRow = Math.max(1, ...D.debts.map(d => d.row)) + 1;
-  put(`Deudas!A${dRow}:F${dRow}`, [[x.name, x.tipo, x.saldo, serial(D.T), x.cuota || '', x.dia]]);
+  put(`Deudas!A${dRow}:F${dRow}`, [[x.name, x.tipo, x.saldo, serial(D.today), x.cuota || '', x.dia]]);
   let bRow = null;
   if (monthly) {
     const same = D.bills.find(b => norm(b.name) === norm(x.name));        // si ya existía como cuenta, se convierte en la cuota de la deuda
@@ -1486,7 +1512,8 @@ document.addEventListener('click', async e => {
     case 'new-debt': { const fromReg = el.dataset.from === 'reg'; return openDebtSheet({ name: el.dataset.name || '' }, { onSaved: n => { if (fromReg && R) { R.tipo = 'Pago de deuda'; R.link = n; R.err = ''; R.newDebt = ''; applyLink(R, build()); } } }); }
     case 'ftipo': PF.tipo = el.dataset.v; return render();
     case 'fcat': PF.cat = el.dataset.v; return render();
-    case 'mmonth': { const D = build(); const nx = addYM(PF.month || D.ym, +el.dataset.d); if (nx > D.ym) return; PF.month = nx; PF.cat = ''; return render(); }
+    case 'mmonth': { const D = build({ view: true }); const nx = addYM(D.ym, +el.dataset.d); if (!D.months.includes(nx)) return; S.viewYM = nx === D.curYM ? null : nx; PF.cat = ''; S.selBill = null; return render(); }
+    case 'month-now': S.viewYM = null; PF.cat = ''; S.selBill = null; window.scrollTo(0, 0); return render();
     case 'rmode': syncDraft(); R.mode = el.dataset.v; R.err = ''; R.answer = ''; R.newDebt = ''; return render();
     case 'rtipo': syncDraft(); R.tipo = el.dataset.v; R.link = ''; R.categoria = ''; R.err = ''; R.newDebt = ''; return render();
     case 'rcat': syncDraft(); R.categoria = el.dataset.v; R.err = ''; return render();
@@ -1533,6 +1560,7 @@ function updTotals() {
 }
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.id === 'f-month') { S.viewYM = t.value === today().slice(0, 7) ? null : t.value; S.selBill = null; PF.cat = ''; dirty = false; t.blur(); window.scrollTo(0, 0); render(); return; }
   if (t.id === 'f-fecha') R.fecha = t.value;
   if (t.id === 'f-metodo') { R.metodo = t.value; updHint(); }
   if (t.id === 'f-link' && t.value === '__new') { t.value = R.link || ''; openDebtSheet({}, { onSaved: n => { if (R) { R.link = n; R.err = ''; R.newDebt = ''; applyLink(R, build()); } } }); return; }

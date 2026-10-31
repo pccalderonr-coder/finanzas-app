@@ -80,6 +80,15 @@ main{min-width:0}
 .ib[disabled]{opacity:.3}
 .av{width:40px;height:40px;border-radius:50%;padding:2px;background:var(--grad);display:block}
 .av i{display:grid;place-items:center;width:100%;height:100%;border-radius:50%;border:2px solid var(--bg);background:var(--grad-card);color:#ffffff;font-style:normal;font-weight:700;font-size:14px}
+/* selector de mes */
+.msel{position:relative;display:inline-flex;align-items:center;gap:3px;max-width:100%;cursor:pointer;border-radius:999px}
+.msel>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msel .ic{width:16px;height:16px;stroke-width:2.6;flex:none}
+.msel select{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:16px;border:0;margin:0;padding:0}
+.msel:focus-within{outline:2px solid var(--blue);outline-offset:2px}
+.hello .msel{background:var(--elev);color:var(--fg);padding:3px 8px 3px 10px;margin:0 0 2px -2px;font-size:12.5px;font-weight:700;min-height:26px}
+.msel.big{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.msel.big .ic{width:22px;height:22px;stroke-width:2.4}
 .sync{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg2);margin:-4px 0 10px;min-width:0}
 .sync span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sync .dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:none}
@@ -366,9 +375,9 @@ table{width:100%;border-collapse:collapse}
 @media (max-width:360px){ .two{grid-template-columns:1fr} .modes{gap:6px} .mode{font-size:12px} }
 @media (prefers-reduced-motion: reduce){ *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition:none!important} }
 </style>
-<script src="config.js?v=4"></script>
-<script src="template.js?v=4"></script>
-<script src="app.js?v=4" defer></script>
+<script src="config.js?v=5"></script>
+<script src="template.js?v=5"></script>
+<script src="app.js?v=5" defer></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
