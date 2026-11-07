@@ -6,7 +6,7 @@
 'use strict';
 
 const CFG = window.FINANZAS_CONFIG || {};
-const APP_VERSION = '31/10/2026 · 6';
+const APP_VERSION = '7/11/2026 · 7';
 const TPL = window.FinanzasTemplate;
 const SCOPE_FILE = 'https://www.googleapis.com/auth/drive.file';
 const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
@@ -27,7 +27,7 @@ const S = {
   raw: {}, loadedAt: 0, loading: false, err: null, pending: [], removed: new Set(),
   hide: LS.get('fz-hide', false), demo: LS.get('fz-demo', false), name: LS.get('fz-name', ''),
   key: LS.get('fz-gemini-key', ''), model: LS.get('fz-gemini-model', CFG.defaultModel || MODELS[0]), gemLastMs: LS.get('fz-gem-last', 0), tabIds: null,
-  setup: null, busy: '', selBill: null, viewYM: null, askText: '', answer: null, asking: false, voice: null
+  setup: null, busy: '', selBill: null, viewYM: null, needSheets: LS.get('fz-need-sheets', false), askText: '', answer: null, asking: false, voice: null
 };
 let VIEW = 'inicio', PLANTAB = 'presupuesto', PF = { tipo: '', cat: '' };
 let R = null;  // borrador de movimiento
@@ -297,12 +297,14 @@ const hasScope = s => (S.scopes || '').split(/\s+/).includes(s);
 function signIn({ sheets = false, prompt = '' } = {}) {
   return new Promise((resolve, reject) => {
     if (!clientReady()) return reject({ code: 'no_client' });
-    const scope = [SCOPE_FILE].concat(sheets || hasScope(SCOPE_SHEETS) ? [SCOPE_SHEETS] : []).join(' ');
+    const wantSheets = sheets || hasScope(SCOPE_SHEETS) || S.needSheets;   // una hoja conectada por enlace necesita este permiso en cada inicio de sesión
+    const scope = [SCOPE_FILE].concat(wantSheets ? [SCOPE_SHEETS] : []).join(' ');
     const g = window.google && window.google.accounts && window.google.accounts.oauth2;
     if (!g) { redirectSignIn(scope); return; }
     try {
       const tc = g.initTokenClient({ client_id: CFG.googleClientId, scope, include_granted_scopes: true,
-        callback: r => { if (!r || r.error) return reject({ code: r?.error || 'denied' }); saveToken(r.access_token, r.expires_in, r.scope); resolve(r); },
+        callback: r => { if (!r || r.error) return reject({ code: r?.error || 'denied' }); saveToken(r.access_token, r.expires_in, r.scope);
+          if (wantSheets && !String(r.scope || '').split(/\s+/).includes(SCOPE_SHEETS)) return reject({ code: 'scope_denied' }); resolve(r); },
         error_callback: e => reject({ code: e?.type || 'popup_failed' }) });
       tc.requestAccessToken({ prompt });
     } catch (e) { reject({ code: 'popup_failed' }); }
@@ -351,7 +353,7 @@ async function loadSheet({ quiet = false } = {}) {
     const j = await gfetch(`${SHEETS}/${enc(S.sheetId)}/values:batchGet?${qs}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`);
     const raw = {}; keys.forEach((k, i) => { raw[k] = j.valueRanges?.[i]?.values || []; });
     S.raw = raw; S.loadedAt = Date.now(); S.err = null; S.pending = []; S.removed.clear();
-  } catch (e) { S.err = e; }
+  } catch (e) { S.err = (e.code === 'not_found' || e.code === 'forbidden') && !hasScope(SCOPE_SHEETS) ? { code: 'need_access' } : e; }
   finally { S.loading = false; render({ data: quiet }); }
 }
 async function appendMovement(m) {
@@ -660,8 +662,8 @@ function syncLine() {
 }
 function errBanner() {
   if (!S.err || S.demo) return '';
-  const e = S.err; const msg = e.code === 'auth' ? 'Tu sesión de Google venció.' : e.code === 'forbidden' ? 'Tu cuenta de Google no tiene acceso a esta hoja.' : e.code === 'not_found' ? 'No encontré la hoja. ¿La borraste o la moviste?' : e.code === 'network' ? 'Sin conexión. Mostrando lo último que cargó.' : (e.message || 'No pude leer la hoja.');
-  const btn = e.code === 'auth' ? `<button class="btn sm pri" data-act="signin">Continuar con Google</button>` : e.code === 'not_found' || e.code === 'forbidden' ? `<button class="btn sm" data-act="change-sheet">Cambiar hoja</button>` : `<button class="btn sm" data-act="refresh">Reintentar</button>`;
+  const e = S.err; const msg = e.code === 'need_access' ? (e.message || 'Google pide confirmar otra vez el permiso para abrir tu hoja. Tus datos siguen ahí.') : e.code === 'auth' ? 'Tu sesión de Google venció.' : e.code === 'forbidden' ? 'Tu cuenta de Google no tiene acceso a esta hoja.' : e.code === 'not_found' ? 'No encontré la hoja. ¿La borraste o la moviste?' : e.code === 'network' ? 'Sin conexión. Mostrando lo último que cargó.' : (e.message || 'No pude leer la hoja.');
+  const btn = e.code === 'need_access' ? `<button class="btn sm pri" data-act="grant-sheets">Dar permiso</button>` : e.code === 'auth' ? `<button class="btn sm pri" data-act="signin">Continuar con Google</button>` : e.code === 'not_found' || e.code === 'forbidden' ? `<button class="btn sm" data-act="change-sheet">Cambiar hoja</button>` : `<button class="btn sm" data-act="refresh">Reintentar</button>`;
   return `<div class="banner bad">${ic('alert')}<span class="grow">${esc(msg)}</span>${btn}</div>`;
 }
 function demoBanner() { return S.demo ? `<div class="banner demo">${ic('eye')}<span class="grow"><b>Datos de ejemplo.</b> Nada de esto es tuyo y nada se guarda en tu hoja.</span><button class="btn sm" data-act="demo-off">Usar mi hoja</button></div>` : ''; }
@@ -1544,8 +1546,8 @@ document.addEventListener('click', async e => {
     case 'settings': return openSettings();
     case 'close-sheet': return closeSheet();
     case 'refresh': closeSheet(); if (S.demo) return render(); return loadSheet();
-    case 'signin': S.err = null; try { await signIn({ prompt: tokenValid() ? '' : '' }); S.err = null; if (S.sheetId) { await loadSheet(); maybeGuide(); } else render(); } catch (err) { S.err = { code: err.code, message: err.code === 'popup_failed' || err.code === 'popup_closed' ? 'No se abrió la ventana de Google. Usa “Inicia sesión aquí”.' : err.code === 'no_client' ? 'Falta el ID de cliente en config.js.' : 'Google no dio acceso.' }; render(); } return;
-    case 'signin-redirect': return redirectSignIn(SCOPE_FILE + (hasScope(SCOPE_SHEETS) ? ' ' + SCOPE_SHEETS : ''));
+    case 'signin': S.err = null; try { await signIn({ prompt: tokenValid() ? '' : '' }); S.err = null; if (S.sheetId) { await loadSheet(); maybeGuide(); } else render(); } catch (err) { if (err.code === 'scope_denied') { S.err = { code: 'need_access', message: 'Falta el permiso para abrir tu hoja. Toca Dar permiso y marca la casilla para ver y editar tus hojas de cálculo.' }; render(); return; } S.err = { code: err.code, message: err.code === 'popup_failed' || err.code === 'popup_closed' ? 'No se abrió la ventana de Google. Usa “Inicia sesión aquí”.' : err.code === 'no_client' ? 'Falta el ID de cliente en config.js.' : 'Google no dio acceso.' }; render(); } return;
+    case 'signin-redirect': return redirectSignIn(SCOPE_FILE + (hasScope(SCOPE_SHEETS) || S.needSheets ? ' ' + SCOPE_SHEETS : ''));
     case 'signout': closeSheet(); return signOut();
     case 'update-app': closeSheet(); toast('Buscando la versión más reciente…');
       try { const regs = navigator.serviceWorker && navigator.serviceWorker.getRegistrations ? await navigator.serviceWorker.getRegistrations() : []; await Promise.all(regs.map(x => x.unregister())); if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); } } catch (err) {}
@@ -1558,7 +1560,12 @@ document.addEventListener('click', async e => {
       catch (err) { S.sheetId = ''; S.setup = { step: 'choose', err: err.code === 'auth' ? 'Tu sesión venció. Inicia sesión otra vez.' : 'No se pudo crear la hoja: ' + (err.message || 'intenta de nuevo.') }; render(); } return;
     case 'setup-link': S.setup = { step: 'link' }; return render();
     case 'setup-back': S.setup = { step: 'choose' }; return render();
-    case 'change-sheet': closeSheet(); S.sheetId = ''; LS.set('fz-sheet', ''); S.tabs = []; S.raw = {}; S.err = null; S.setup = { step: 'choose' }; S.demo = false; LS.set('fz-demo', false); return render();
+    case 'grant-sheets':
+      try { await signIn({ sheets: true, prompt: 'consent' }); S.needSheets = true; LS.set('fz-need-sheets', true); S.err = null; S.tabs = []; await loadSheet(); }
+      catch (err) { if (err.code === 'scope_denied') { S.needSheets = true; LS.set('fz-need-sheets', true); }
+        S.err = { code: 'need_access', message: err.code === 'scope_denied' ? 'Falta el permiso. Toca Dar permiso y marca la casilla para ver y editar tus hojas de cálculo.' : err.code === 'popup_failed' || err.code === 'popup_closed' ? 'No se abrió la ventana de Google. Intenta de nuevo.' : 'Google no dio el permiso. Intenta de nuevo.' }; render(); }
+      return;
+    case 'change-sheet': closeSheet(); S.needSheets = false; LS.set('fz-need-sheets', false); S.sheetId = ''; LS.set('fz-sheet', ''); S.tabs = []; S.raw = {}; S.err = null; S.setup = { step: 'choose' }; S.demo = false; LS.set('fz-demo', false); return render();
     case 'gemini-settings': closeSheet(); openSheet(`<div class="grab"></div>${geminiSetup(true)}`); return;
     case 'selbill': S.selBill = S.selBill === el.dataset.name ? null : el.dataset.name; return render();
     case 'pay': { const D = build(); const b = D.bills.find(x => x.name === el.dataset.name); if (!b) return; R = newDraft({ tipo: 'Gasto', link: b.name }); applyLink(R, D); location.hash = '#registrar'; return; }
@@ -1637,7 +1644,7 @@ document.addEventListener('submit', async e => {
     catch (x) { err.textContent = gemMsg(x); btn.disabled = false; btn.textContent = 'Probar y guardar'; } }
   if (id === 'linkf') { const v = ($('#f-link-sheet')?.value || '').trim(); const m = v.match(/\/d\/([A-Za-z0-9_-]{20,})/) || v.match(/^([A-Za-z0-9_-]{20,})$/);
     if (!m) { S.setup.err = 'Ese enlace no parece de una hoja de Google.'; return render(); }
-    try { if (!hasScope(SCOPE_SHEETS)) await signIn({ sheets: true, prompt: 'consent' }); const meta = await sheetMeta(m[1]); useSheet(m[1], meta.properties?.title); S.tabs = (meta.sheets || []).map(s => s.properties.title); S.setup = null; await loadSheet(); maybeGuide(); }
+    try { if (!hasScope(SCOPE_SHEETS)) await signIn({ sheets: true, prompt: 'consent' }); const meta = await sheetMeta(m[1]); useSheet(m[1], meta.properties?.title); S.needSheets = true; LS.set('fz-need-sheets', true); S.tabs = (meta.sheets || []).map(s => s.properties.title); S.setup = null; await loadSheet(); maybeGuide(); }
     catch (x) { S.setup.err = x.code === 'not_found' || x.code === 'forbidden' ? 'No puedo abrir esa hoja con tu cuenta de Google.' : x.code === 'popup_failed' ? 'No se abrió la ventana de Google. Intenta de nuevo.' : 'No se pudo conectar: ' + (x.message || x.code); render(); } }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#sheet-root').innerHTML) closeSheet(); });
